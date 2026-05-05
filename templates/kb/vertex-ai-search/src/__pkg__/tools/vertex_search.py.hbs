@@ -1,0 +1,39 @@
+"""Vertex AI Search FunctionTool.
+
+Reads the datastore resource path from KB_DATASTORE — set automatically by
+agentq-cli at deploy time from agentq.config.yaml.
+"""
+from __future__ import annotations
+
+from google.cloud import discoveryengine_v1 as discoveryengine
+
+from ..config import get_settings
+
+
+def vertex_ai_search(query: str) -> str:
+    """Search the configured Vertex AI Search datastore.
+
+    Args:
+        query: Natural-language search query.
+
+    Returns:
+        Top result snippets formatted as readable text. Cite the result
+        titles when grounding an answer; if nothing relevant is found, say
+        so plainly — do NOT invent results.
+    """
+    settings = get_settings()
+    serving_config = f"{settings.kb_datastore}/servingConfigs/default_config"
+    client = discoveryengine.SearchServiceClient()
+    request = discoveryengine.SearchRequest(
+        serving_config=serving_config, query=query, page_size=5,
+    )
+    response = client.search(request)
+
+    blocks: list[str] = []
+    for i, result in enumerate(response.results, 1):
+        derived = result.document.derived_struct_data or {}
+        title = derived.get("title", "(untitled)")
+        snippets = derived.get("snippets", []) or []
+        body = "\n".join(s.get("snippet", "") for s in snippets) if snippets else "(no snippet)"
+        blocks.append(f"[Result {i}] {title}\n{body}")
+    return "\n\n".join(blocks) if blocks else "No results found."

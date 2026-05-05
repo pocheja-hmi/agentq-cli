@@ -1,0 +1,8 @@
+"""Smoke test: importable, root_agent resolves, name is correct."""
+from __future__ import annotations
+
+
+def test_root_agent_imports():
+    from {{project.package}}.agent import root_agent
+    assert root_agent is not None
+    assert getattr(root_agent, "name", None), "root_agent must have a name"

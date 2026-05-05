@@ -1,0 +1,15 @@
+"""Sub-agent registry. Each sub-agent gets its own module — the orchestrator
+imports them through this package, so adding/removing one is a one-line edit
+here plus the matching module file.
+"""
+from __future__ import annotations
+
+{{#stages}}
+from .{{name}} import {{name}}
+{{/stages}}
+
+SUB_AGENTS = [
+{{#stages}}
+    {{name}},
+{{/stages}}
+]

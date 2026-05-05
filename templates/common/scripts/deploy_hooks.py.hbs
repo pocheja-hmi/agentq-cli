@@ -1,0 +1,35 @@
+"""Optional deploy hooks for {{project.name}}.
+
+Each hook receives a single dict-like context:
+    {"config": AgentqConfig, "phase": "pre"|"post", "resource_name": str?}
+
+Hooks are referenced by 'module.path:callable' under hooks: in
+agentq.config.yaml. Example:
+
+    hooks:
+      pre_deploy:  scripts.deploy_hooks:pre_deploy
+      post_deploy: scripts.deploy_hooks:post_deploy
+"""
+from __future__ import annotations
+
+from typing import Any
+
+
+def pre_deploy(ctx: dict[str, Any]) -> None:
+    """Runs before agent_engines.create()/update().
+
+    Common uses: rotate a service-account key, write a generated value into
+    config.runtime.env_vars, validate that prerequisite resources exist.
+    """
+    cfg = ctx["config"]
+    print(f"  [hook] pre_deploy for {cfg.project.name}")
+
+
+def post_deploy(ctx: dict[str, Any]) -> None:
+    """Runs after a successful create or update.
+
+    Common uses: register the resource_name with downstream systems, send
+    a notification, write an audit log.
+    """
+    cfg = ctx["config"]
+    print(f"  [hook] post_deploy for {cfg.project.name} → {ctx.get('resource_name')}")

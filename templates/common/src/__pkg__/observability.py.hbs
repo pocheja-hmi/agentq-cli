@@ -1,0 +1,74 @@
+"""Observability primitives — uniform across all AgentQ projects.
+
+Every team gets the same callbacks. Choose level in agentq.config.yaml.
+
+Usage:
+    from {{project.package}}.observability import attach
+    attach(my_llm_agent)
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from typing import Any
+
+LEVEL = os.environ.get("AGENTQ_OBSERVABILITY_LEVEL", "{{observability.level}}")
+
+logger = logging.getLogger("{{project.package}}")
+if not logger.handlers:
+    h = logging.StreamHandler()
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logger.addHandler(h)
+    logger.setLevel(logging.INFO)
+
+
+def _structured(event: str, **fields: Any) -> str:
+    payload: dict[str, Any] = {"event": event, "ts": time.time(), **fields}
+    return json.dumps(payload, default=str)
+
+
+def before_agent(callback_context) -> None:
+    state = getattr(callback_context, "state", None)
+    name  = getattr(callback_context, "agent_name", "?")
+    logger.info(_structured("agent.before", agent=name, has_state=bool(state)))
+
+
+def after_agent(callback_context) -> None:
+    name = getattr(callback_context, "agent_name", "?")
+    logger.info(_structured("agent.after", agent=name))
+
+
+def after_model(callback_context, llm_response) -> None:  # noqa: ARG001
+    """ADK after_model_callback.
+
+    Important: ADK invokes this with keyword arguments, so the parameter
+    name MUST be `llm_response` (not `model_response` or anything else).
+    Renaming this parameter will break the callback at runtime in the
+    deployed container with a TypeError.
+    """
+    if LEVEL not in ("standard", "advanced"):
+        return
+    usage = getattr(llm_response, "usage_metadata", None)
+    fields: dict[str, Any] = {"agent": getattr(callback_context, "agent_name", "?")}
+    if usage is not None:
+        fields["prompt_tokens"]   = getattr(usage, "prompt_token_count", None)
+        fields["response_tokens"] = getattr(usage, "candidates_token_count", None)
+        fields["total_tokens"]    = getattr(usage, "total_token_count", None)
+    logger.info(_structured("model.after", **fields))
+
+
+def attach(agent) -> None:
+    """Wire the standard callbacks into an LlmAgent.
+
+    Safe to call on agents that already have callbacks — we don't overwrite.
+    """
+    if not hasattr(agent, "before_agent_callback"):
+        return
+    if agent.before_agent_callback is None:
+        agent.before_agent_callback = before_agent
+    if agent.after_agent_callback is None:
+        agent.after_agent_callback = after_agent
+    if LEVEL in ("standard", "advanced") and getattr(agent, "after_model_callback", None) is None:
+        agent.after_model_callback = after_model

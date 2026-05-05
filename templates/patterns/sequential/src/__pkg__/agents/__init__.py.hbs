@@ -1,0 +1,12 @@
+"""Pipeline stages — registered in execution order."""
+from __future__ import annotations
+
+{{#stages}}
+from .{{name}} import {{name}}
+{{/stages}}
+
+STAGES = [
+{{#stages}}
+    {{name}},
+{{/stages}}
+]

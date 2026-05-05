@@ -1,0 +1,63 @@
+"""{{project.display_name}} — LlmAgent orchestrator + SequentialAgent inner pipeline.
+
+The orchestrator handles conversational entry (greetings, clarifications,
+intent routing). When the request is real work, it transfers to the
+sequential pipeline which runs the stages in deterministic order.
+"""
+from __future__ import annotations
+
+from google.adk.agents import LlmAgent, SequentialAgent
+
+from .config import get_settings
+from .observability import attach
+from .agents import STAGES
+{{#flags.include_file_tools}}
+from .tools import list_uploaded_files_tool, read_uploaded_file_tool
+{{/flags.include_file_tools}}
+
+
+_settings = get_settings()
+
+
+pipeline = SequentialAgent(
+    name="{{project.package}}_pipeline",
+    description="Deterministic processing pipeline.",
+    sub_agents=STAGES,
+)
+
+
+_INSTRUCTION = """\
+You are the {{project.display_name}} orchestrator.
+
+When the user wants real work done, call:
+    transfer_to_agent(agent_name="{{project.package}}_pipeline")
+
+For greetings, clarifying questions, or status checks, answer directly.
+{{#flags.include_file_tools}}
+
+File handling:
+- If the user uploads a file, call `list_uploaded_files` to see what's
+  attached and `read_uploaded_file(filename=...)` to read it.
+- For ANY request that references attached files, read them BEFORE
+  transferring to the pipeline so you can pass relevant context along.
+{{/flags.include_file_tools}}
+"""
+
+
+root_agent = LlmAgent(
+    name="{{project.package}}_orchestrator",
+    model=_settings.model,
+    description="{{project.description}}",
+    instruction=_INSTRUCTION,
+    tools=[
+{{#flags.include_file_tools}}
+        list_uploaded_files_tool,
+        read_uploaded_file_tool,
+{{/flags.include_file_tools}}
+    ],
+    sub_agents=[pipeline],
+)
+
+attach(root_agent)
+for _stage in STAGES:
+    attach(_stage)

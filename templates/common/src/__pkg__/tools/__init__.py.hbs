@@ -1,0 +1,37 @@
+"""FunctionTool implementations for {{project.display_name}}.
+
+Pattern recap:
+    1. Plain Python function (docstring + type hints become the tool spec).
+    2. Wrap with FunctionTool(func=...) where the agent is built.
+    3. Read secrets from os.environ — never .env at runtime.
+
+For tools that need the live ADK runtime (artifacts, session, state), add
+`tool_context: ToolContext` to the function signature — ADK injects it
+automatically and hides it from the model-visible spec.
+"""
+__all__: list[str] = []
+
+{{#flags.include_sample_tool}}
+from .sample_tool import echo_tool
+__all__ += ["echo_tool"]
+{{/flags.include_sample_tool}}
+
+{{#flags.include_file_tools}}
+from .file_tools import (
+    list_uploaded_files,
+    read_uploaded_file,
+    list_uploaded_files_tool,
+    read_uploaded_file_tool,
+)
+__all__ += [
+    "list_uploaded_files",
+    "read_uploaded_file",
+    "list_uploaded_files_tool",
+    "read_uploaded_file_tool",
+]
+{{/flags.include_file_tools}}
+
+{{#flags.kb_vertex}}
+from .vertex_search import vertex_ai_search
+__all__ += ["vertex_ai_search"]
+{{/flags.kb_vertex}}

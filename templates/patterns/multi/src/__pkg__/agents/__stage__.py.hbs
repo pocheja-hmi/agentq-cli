@@ -1,0 +1,28 @@
+"""Sub-agent: {{name}}.
+
+Replace the description and instruction with what this agent should actually
+do. Tools added here are scoped to THIS agent only — they cannot be called
+by the orchestrator or any sibling.
+"""
+from __future__ import annotations
+
+from google.adk.agents import LlmAgent
+
+from ..config import get_settings
+
+
+_settings = get_settings()
+
+
+{{name}} = LlmAgent(
+    name="{{name}}",
+    model=_settings.model,
+    description="TODO: what this agent does",
+    instruction=(
+        "You are the {{name}} sub-agent. "
+        "TODO: replace this prompt with the agent's actual job."
+    ),
+    tools=[
+        # FunctionTool(func=...),
+    ],
+)

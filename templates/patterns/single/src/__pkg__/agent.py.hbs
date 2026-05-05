@@ -1,0 +1,66 @@
+"""{{project.display_name}} — single LlmAgent.
+
+The simplest possible AgentQ agent: one LlmAgent with a tool list and an
+instruction. Add more tools as you grow.
+"""
+from __future__ import annotations
+
+from google.adk.agents import LlmAgent
+
+from .config import get_settings
+from .observability import attach
+{{#flags.include_sample_tool}}
+from .tools import echo_tool
+{{/flags.include_sample_tool}}
+{{#flags.include_file_tools}}
+from .tools import list_uploaded_files_tool, read_uploaded_file_tool
+{{/flags.include_file_tools}}
+{{#flags.kb_vertex}}
+from .tools import vertex_ai_search
+from google.adk.tools import FunctionTool
+{{/flags.kb_vertex}}
+
+
+_settings = get_settings()
+
+
+_INSTRUCTION = (
+    "You are {{project.display_name}}. "
+{{#flags.kb_vertex}}
+    "Use vertex_ai_search to answer questions from the knowledge base. "
+    "Always cite the result titles. Do not invent answers. "
+{{/flags.kb_vertex}}
+{{#flags.include_file_tools}}
+    "When the user uploads a file, you can call `list_uploaded_files` to see "
+    "what's attached and `read_uploaded_file(filename=...)` to read its "
+    "contents. Supported types include PDF, DOCX, XLSX, CSV, JSON, "
+    "Markdown, and plain text. Always read a file before answering "
+    "questions about it. "
+{{/flags.include_file_tools}}
+{{^flags.kb_vertex}}
+{{^flags.include_file_tools}}
+    "Help the user with their request."
+{{/flags.include_file_tools}}
+{{/flags.kb_vertex}}
+)
+
+
+root_agent = LlmAgent(
+    name="{{project.package}}_agent",
+    model=_settings.model,
+    description="{{project.description}}",
+    instruction=_INSTRUCTION,
+    tools=[
+{{#flags.include_sample_tool}}
+        echo_tool,
+{{/flags.include_sample_tool}}
+{{#flags.include_file_tools}}
+        list_uploaded_files_tool,
+        read_uploaded_file_tool,
+{{/flags.include_file_tools}}
+{{#flags.kb_vertex}}
+        FunctionTool(func=vertex_ai_search),
+{{/flags.kb_vertex}}
+    ],
+)
+attach(root_agent)

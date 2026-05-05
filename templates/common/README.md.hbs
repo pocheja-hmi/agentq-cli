@@ -1,0 +1,122 @@
+# {{project.display_name}}
+
+{{project.description}}
+
+> Scaffolded by **agentq-cli**. The structure is uniform across all AgentQ
+> projects — that's the point. Don't move files around without good reason;
+> the central deployer expects this layout.
+
+## Layout
+
+```
+.
+├── agentq.config.yaml         ← single source of truth (CLI reads this)
+├── .env.example
+├── pyproject.toml
+├── src/{{project.package}}/
+│   ├── agent.py               ← exports root_agent
+│   ├── config.py              ← typed config / env loader
+│   ├── observability.py       ← tracing, structured logs
+│   ├── agents/                ← sub-agents (only if pattern uses them)
+│   └── tools/                 ← FunctionTool implementations
+├── scripts/
+│   ├── deploy_hooks.py        ← optional pre/post deploy hooks
+{{#flags.kb_vertex}}
+│   └── ...
+├── knowledge/                 ← drop your KB source files here
+{{/flags.kb_vertex}}
+└── tests/
+```
+
+## Quick start
+
+```bash
+# 1. Create local env
+cp .env.example .env
+python -m venv .venv && source .venv/bin/activate
+pip install -e .[dev]
+
+# 2. Verify
+agentq doctor
+
+# 3. Run locally
+adk web src/
+
+{{#flags.kb_vertex}}
+# 4. Provision the knowledge base (one-time)
+agentq kb create-bucket
+agentq kb upload                # uploads everything in knowledge/
+agentq kb create-datastore
+agentq kb import                # wait 1–5 min for indexing
+agentq kb list
+
+# 5. Deploy
+agentq deploy
+{{/flags.kb_vertex}}
+{{^flags.kb_vertex}}
+# 4. Deploy
+agentq deploy
+{{/flags.kb_vertex}}
+```
+
+## Common commands
+
+| Command                   | What it does                                          |
+| ------------------------- | ----------------------------------------------------- |
+| `agentq doctor`           | Pre-flight checks (auth, APIs, config integrity).     |
+| `agentq deploy`           | Create or update the Reasoning Engine.                |
+| `agentq list`             | List all Reasoning Engines in this GCP project.       |
+| `agentq logs <resource>`  | Tail Cloud Logging for a deployed agent.              |
+| `agentq destroy <resource>` | Delete a deployment (with confirmation).            |
+{{#flags.kb_enabled}}
+| `agentq kb <subcommand>`  | Manage the knowledge base (see `agentq kb` for help). |
+{{/flags.kb_enabled}}
+
+{{#flags.include_file_tools}}
+## File handling (uploaded files in AgentQ)
+
+This project ships with two ready-made tools that let the agent read files
+the user attaches to the conversation:
+
+| Tool                        | Purpose                                              |
+| --------------------------- | ---------------------------------------------------- |
+| `list_uploaded_files()`     | Returns every file currently attached to the chat.   |
+| `read_uploaded_file(name)`  | Returns extracted text content for the given file.   |
+
+Supported formats out of the box: **PDF, DOCX, XLSX/XLSM, CSV/TSV, JSON,
+Markdown, plain text, source code, YAML/TOML/INI, HTML/XML**.
+
+Adding more formats is one decorator call in
+`src/{{project.package}}/tools/file_readers.py`:
+
+```python
+@register(".epub")
+def _read_epub(data: bytes) -> str:
+    ...
+```
+
+The agent's instruction already tells it when to use these tools — read
+`agent.py` for the wording.
+
+## Pattern: `{{agent.pattern}}`
+{{/flags.include_file_tools}}
+{{^flags.include_file_tools}}
+## Pattern: `{{agent.pattern}}`
+{{/flags.include_file_tools}}
+
+This project was scaffolded with the **{{agent.pattern}}** orchestration
+pattern. See `src/{{project.package}}/agent.py` for the structure.
+
+## Customising deployment
+
+The CLI runs a uniform deploy across every AgentQ project. If this project
+needs additional setup or tear-down — e.g. populating a BigQuery table or
+rotating a secret — implement it in `scripts/deploy_hooks.py` and reference
+it under `hooks:` in `agentq.config.yaml`. The hooks receive the loaded
+config and run inside the deploy pipeline.
+
+## Registering for AgentQ users
+
+After `agentq deploy`, copy the printed `resource_name` and register it in
+**Gemini Enterprise → Agent Designer → New custom agent → Use existing
+reasoning engine**. The agent will then appear inside AgentQ.

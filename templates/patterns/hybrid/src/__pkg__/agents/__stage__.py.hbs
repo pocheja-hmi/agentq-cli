@@ -1,0 +1,21 @@
+"""Pipeline stage: {{name}}."""
+from __future__ import annotations
+
+from google.adk.agents import LlmAgent
+
+from ..config import get_settings
+
+
+_settings = get_settings()
+
+
+{{name}} = LlmAgent(
+    name="{{name}}",
+    model=_settings.model,
+    description="TODO: what stage {{index}} does",
+    instruction=(
+        "You are pipeline stage {{index}} ({{name}}). "
+        "TODO: describe inputs and outputs."
+    ),
+    output_key="{{name}}",
+)

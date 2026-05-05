@@ -1,0 +1,112 @@
+"""File-handling tools for AgentQ uploaded files.
+
+In an AgentQ conversation, users can attach files (PDFs, DOCX, spreadsheets,
+text, JSON, code…). ADK exposes these as **artifacts** through the
+ToolContext. Two tools cover 99% of agent workflows:
+
+    list_uploaded_files()                 — what did the user attach?
+    read_uploaded_file(filename="X.pdf")  — get the text content of one
+
+Wiring into an agent (recap):
+    from {{project.package}}.tools import (
+        list_uploaded_files_tool,
+        read_uploaded_file_tool,
+    )
+
+    LlmAgent(
+        ...,
+        tools=[list_uploaded_files_tool, read_uploaded_file_tool],
+    )
+
+Why a `tool_context: ToolContext` parameter?
+    ADK inspects the function signature. When a parameter is typed as
+    ToolContext, ADK injects the live runtime context — that's the only
+    way to reach the artifact service from inside a tool. The model
+    NEVER sees this parameter; it's hidden from the tool spec.
+"""
+from __future__ import annotations
+
+from google.adk.tools import FunctionTool, ToolContext
+
+from .file_readers import extract_text, SUPPORTED_EXTENSIONS
+
+
+# Cap the size we'll return to the model so a huge upload doesn't blow up
+# the context window. Tweak per project as needed.
+MAX_RETURNED_CHARS = 200_000
+
+
+async def list_uploaded_files(tool_context: ToolContext) -> str:
+    """List every file the user has uploaded in this conversation.
+
+    Returns:
+        Newline-separated list of filenames, or a friendly message if none.
+        Use the exact filename with read_uploaded_file to load the content.
+    """
+    try:
+        files = await tool_context.list_artifacts()
+    except Exception as e:
+        return f"Could not list uploaded files: {type(e).__name__}: {e}"
+    if not files:
+        return "No files have been uploaded in this conversation."
+    body = "\n".join(f"  - {name}" for name in files)
+    return f"Files uploaded in this conversation ({len(files)}):\n{body}"
+
+
+async def read_uploaded_file(filename: str, tool_context: ToolContext) -> str:
+    """Read the content of a file the user uploaded in this conversation.
+
+    Supports text, JSON, CSV/TSV, Markdown, source code, PDF, DOCX, and
+    XLSX. For unsupported types returns a descriptor (size + mime type)
+    so you can decide how to proceed without erroring.
+
+    Args:
+        filename: Exact filename returned by list_uploaded_files.
+
+    Returns:
+        Extracted textual content. Truncated if it exceeds the per-call
+        size cap (a notice is appended).
+    """
+    try:
+        artifact = await tool_context.load_artifact(filename)
+    except Exception as e:
+        return f"Error loading {filename}: {type(e).__name__}: {e}"
+
+    if artifact is None:
+        return (
+            f"File not found: {filename}. "
+            "Call list_uploaded_files to see what's actually attached."
+        )
+
+    inline = getattr(artifact, "inline_data", None)
+    if inline is None or getattr(inline, "data", None) is None:
+        return f"{filename}: artifact has no inline data."
+
+    data: bytes = inline.data
+    mime: str | None = getattr(inline, "mime_type", None)
+    text = extract_text(filename, data, mime)
+
+    if len(text) > MAX_RETURNED_CHARS:
+        truncated = text[:MAX_RETURNED_CHARS]
+        return (
+            truncated
+            + f"\n\n[... truncated at {MAX_RETURNED_CHARS:,} characters of {len(text):,} total. "
+              "Ask for a specific page/section if you need more.]"
+        )
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Pre-wrapped tools — import these from agent.py.
+# ---------------------------------------------------------------------------
+list_uploaded_files_tool = FunctionTool(func=list_uploaded_files)
+read_uploaded_file_tool  = FunctionTool(func=read_uploaded_file)
+
+
+__all__ = [
+    "list_uploaded_files",
+    "read_uploaded_file",
+    "list_uploaded_files_tool",
+    "read_uploaded_file_tool",
+    "SUPPORTED_EXTENSIONS",
+]

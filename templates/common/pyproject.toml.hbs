@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "{{project.name}}"
+version = "0.1.0"
+description = "{{project.description}}"
+requires-python = ">=3.10"
+dependencies = [
+    "google-adk>=1.27.0",
+    "google-genai>=1.0.0",
+    "python-dotenv>=1.0.0",
+{{#flags.kb_vertex}}
+    "google-cloud-discoveryengine>=0.13.0",
+    "google-cloud-storage>=2.14.0",
+{{/flags.kb_vertex}}
+{{#flags.include_file_tools}}
+    "pypdf>=4.0.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+{{/flags.include_file_tools}}
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/{{project.package}}"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]

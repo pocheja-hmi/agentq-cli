@@ -1,0 +1,25 @@
+"""{{project.display_name}} — deterministic sequential pipeline.
+
+SequentialAgent runs sub_agents in order. State flows between them through
+session.state — set output_key on a sub-agent and downstream prompts can
+reference {output_key} in their instruction template.
+"""
+from __future__ import annotations
+
+from google.adk.agents import SequentialAgent
+
+from .config import get_settings
+from .observability import attach
+from .agents import STAGES
+
+
+_settings = get_settings()
+
+
+root_agent = SequentialAgent(
+    name="{{project.package}}_pipeline",
+    description="{{project.description}}",
+    sub_agents=STAGES,
+)
+for _stage in STAGES:
+    attach(_stage)

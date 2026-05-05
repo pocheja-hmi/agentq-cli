@@ -1,0 +1,48 @@
+{
+  "name": "agentq-cli",
+  "version": "0.1.0",
+  "description": "Scaffold, deploy, and manage AgentQ Custom Agents (Vertex AI Agent Engine + ADK).",
+  "type": "module",
+  "bin": {
+    "agentq": "./bin/agentq.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "templates",
+    "python",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "clean": "rm -rf dist",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^5.0.7",
+    "chalk": "^5.3.0",
+    "execa": "^9.3.0",
+    "fs-extra": "^11.2.0",
+    "ora": "^8.1.0",
+    "yaml": "^2.5.0",
+    "yargs": "^17.7.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^20.14.10",
+    "@types/yargs": "^17.0.32",
+    "typescript": "^5.5.3"
+  },
+  "keywords": ["agentq", "adk", "vertex-ai", "agent-engine", "scaffolding", "cli"],
+  "license": "UNLICENSED",
+  "author": "AgentQ"
+}

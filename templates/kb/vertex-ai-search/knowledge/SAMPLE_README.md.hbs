@@ -1,0 +1,11 @@
+# Sample knowledge document
+
+This is a placeholder so the bucket has at least one indexable file.
+Replace it (and add more) before running `agentq kb upload`.
+
+## How {{project.display_name}} uses this
+
+The agent's `vertex_ai_search` tool searches the Vertex AI Search datastore
+configured in `agentq.config.yaml` (`knowledge_base.datastore_id`). At
+runtime the datastore's full resource path is read from the `KB_DATASTORE`
+environment variable, which `agentq-cli` injects automatically.

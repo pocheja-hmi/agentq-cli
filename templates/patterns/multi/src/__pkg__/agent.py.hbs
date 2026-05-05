@@ -1,0 +1,70 @@
+"""{{project.display_name}} — orchestrator + sub-agents (LLM routing).
+
+The orchestrator is an LlmAgent. It uses ADK's built-in `transfer_to_agent`
+to delegate to whichever sub-agent its instruction points to. ADK exposes
+that capability automatically when sub_agents=[…] is set — you do NOT call
+transfer_to_agent from Python code.
+"""
+from __future__ import annotations
+
+from google.adk.agents import LlmAgent
+
+from .config import get_settings
+from .observability import attach
+from .agents import SUB_AGENTS
+
+{{#flags.include_sample_tool}}
+from .tools import echo_tool
+{{/flags.include_sample_tool}}
+{{#flags.include_file_tools}}
+from .tools import list_uploaded_files_tool, read_uploaded_file_tool
+{{/flags.include_file_tools}}
+
+
+_settings = get_settings()
+
+
+_INSTRUCTION = """\
+You are the {{project.display_name}} orchestrator.
+
+Sub-agents available via transfer_to_agent:
+{{#stages}}
+  - {{name}}
+{{/stages}}
+
+Routing rules:
+- For greetings or chit-chat, respond directly.
+- For task work, choose the most relevant sub-agent and call
+  transfer_to_agent with agent_name="<that-agent's-name>".
+- Never invent capabilities a sub-agent doesn't have.
+{{#flags.include_file_tools}}
+
+File handling:
+- If the user uploads a file, call `list_uploaded_files` first to see
+  exactly what's attached.
+- Use `read_uploaded_file(filename=...)` to read its contents before
+  routing or answering questions about it. Supports PDF, DOCX, XLSX,
+  CSV, JSON, Markdown, plain text, and source code.
+{{/flags.include_file_tools}}
+"""
+
+
+root_agent = LlmAgent(
+    name="{{project.package}}_orchestrator",
+    model=_settings.model,
+    description="{{project.description}}",
+    instruction=_INSTRUCTION,
+    tools=[
+{{#flags.include_sample_tool}}
+        echo_tool,
+{{/flags.include_sample_tool}}
+{{#flags.include_file_tools}}
+        list_uploaded_files_tool,
+        read_uploaded_file_tool,
+{{/flags.include_file_tools}}
+    ],
+    sub_agents=SUB_AGENTS,
+)
+attach(root_agent)
+for _sa in SUB_AGENTS:
+    attach(_sa)

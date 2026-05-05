@@ -1,0 +1,162 @@
+"""File-content extractors keyed by extension.
+
+Why this module exists separately from file_tools.py:
+- The tools (list/read) handle ADK artifact plumbing.
+- This module handles raw bytes → text. Single responsibility.
+
+Adding a new format is one decorator call. No other code in the project has
+to change — that's the open/closed point.
+
+    @register(".epub")
+    def _read_epub(data: bytes) -> str:
+        ...
+
+Every reader takes bytes, returns str. If extraction fails, raise — the
+caller wraps it into a friendly error message for the model.
+"""
+from __future__ import annotations
+
+import csv
+import io
+import json
+from typing import Callable
+
+# {ext: callable(bytes) -> str}
+_READERS: dict[str, Callable[[bytes], str]] = {}
+
+
+def register(*extensions: str) -> Callable[[Callable[[bytes], str]], Callable[[bytes], str]]:
+    def deco(fn: Callable[[bytes], str]) -> Callable[[bytes], str]:
+        for ext in extensions:
+            _READERS[ext.lower()] = fn
+        return fn
+    return deco
+
+
+# ---------------------------------------------------------------------------
+# Plain text family — covers most config / source / data formats.
+# ---------------------------------------------------------------------------
+@register(
+    ".txt", ".md", ".markdown", ".rst", ".log",
+    ".html", ".htm", ".xml", ".svg",
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".rb", ".sh", ".sql",
+    ".yaml", ".yml", ".toml", ".ini", ".env", ".conf", ".cfg",
+)
+def _read_text(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
+
+
+@register(".json")
+def _read_json(data: bytes) -> str:
+    # Pretty-print so the model sees structured shape instead of a single line.
+    try:
+        return json.dumps(json.loads(data.decode("utf-8", errors="replace")), indent=2)
+    except json.JSONDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
+@register(".csv", ".tsv")
+def _read_csv(data: bytes) -> str:
+    text = data.decode("utf-8", errors="replace")
+    # Detect dialect; fall back to comma.
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096])
+    except csv.Error:
+        dialect = csv.excel
+    rows = list(csv.reader(io.StringIO(text), dialect=dialect))
+    if not rows:
+        return "(empty)"
+    out = []
+    for row in rows[:500]:  # safety cap on very large CSVs
+        out.append("\t".join(cell.replace("\t", " ") for cell in row))
+    if len(rows) > 500:
+        out.append(f"... ({len(rows) - 500} more rows omitted)")
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Binary office formats — each extractor imports its dep lazily so a project
+# that never reads PDFs doesn't pay the import cost.
+# ---------------------------------------------------------------------------
+@register(".pdf")
+def _read_pdf(data: bytes) -> str:
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(data))
+    pages = []
+    for i, page in enumerate(reader.pages, 1):
+        text = page.extract_text() or ""
+        pages.append(f"--- Page {i} ---\n{text.strip()}")
+    return "\n\n".join(pages) if pages else "(empty PDF)"
+
+
+@register(".docx")
+def _read_docx(data: bytes) -> str:
+    from docx import Document
+    doc = Document(io.BytesIO(data))
+    parts: list[str] = []
+    for para in doc.paragraphs:
+        if para.text.strip():
+            parts.append(para.text)
+    for table in doc.tables:
+        parts.append("\n[Table]")
+        for row in table.rows:
+            parts.append("\t".join(cell.text for cell in row.cells))
+    return "\n".join(parts) if parts else "(empty document)"
+
+
+@register(".xlsx", ".xlsm")
+def _read_xlsx(data: bytes) -> str:
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    chunks: list[str] = []
+    for ws in wb.worksheets:
+        chunks.append(f"## Sheet: {ws.title}")
+        rows_seen = 0
+        for row in ws.iter_rows(values_only=True):
+            cells = ["" if c is None else str(c) for c in row]
+            chunks.append("\t".join(cells))
+            rows_seen += 1
+            if rows_seen >= 500:
+                chunks.append(f"... (further rows in '{ws.title}' omitted)")
+                break
+    return "\n".join(chunks)
+
+
+# ---------------------------------------------------------------------------
+# Public dispatcher.
+# ---------------------------------------------------------------------------
+SUPPORTED_EXTENSIONS = sorted(_READERS.keys())
+
+
+def extract_text(filename: str, data: bytes, mime_type: str | None = None) -> str:
+    """Extract textual content from raw bytes.
+
+    Args:
+        filename: Used to detect extension.
+        data: Raw bytes.
+        mime_type: Optional fallback when no extension matches.
+
+    Returns:
+        Best-effort textual representation. For unsupported types, returns
+        a short descriptor so the calling agent can decide how to react.
+    """
+    ext = ""
+    if "." in filename:
+        ext = "." + filename.rsplit(".", 1)[-1].lower()
+    reader = _READERS.get(ext)
+    if reader is None and mime_type and mime_type.startswith("text/"):
+        reader = _read_text
+    if reader is None:
+        size = len(data)
+        return (
+            f"[Unsupported file type for content extraction]\n"
+            f"  filename:  {filename}\n"
+            f"  extension: {ext or '(none)'}\n"
+            f"  mime_type: {mime_type or 'unknown'}\n"
+            f"  size:      {size} bytes\n"
+            f"Supported: {', '.join(SUPPORTED_EXTENSIONS)}"
+        )
+    try:
+        return reader(data)
+    except Exception as e:
+        return f"[Error reading {filename}: {type(e).__name__}: {e}]"

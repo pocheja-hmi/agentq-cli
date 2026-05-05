@@ -1,0 +1,4 @@
+# Drop your knowledge documents (PDF, MD, DOCX, TXT, HTML, PPTX) into this folder.
+# Then run:
+#   agentq kb upload
+#   agentq kb import
