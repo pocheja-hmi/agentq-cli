@@ -196,6 +196,15 @@ def _common_kwargs(cfg, target=None) -> dict:
         # (which was populated from the default tier or legacy block at load).
         env_vars["KB_DATASTORE"] = target.datastore_resource
 
+    # Vertex rejects env vars with empty-string values
+    # ("reasoning_engine.spec.deployment_spec.env[N].value: Required field
+    # is not set"). Strip them so users can leave commented-out placeholder
+    # keys in agentq.config.yaml without breaking deploys.
+    empty_keys = sorted(k for k, v in env_vars.items() if v == "" or v is None)
+    if empty_keys:
+        print(f"  [deploy] note: dropping empty env_vars: {empty_keys}")
+        env_vars = {k: v for k, v in env_vars.items() if k not in empty_keys}
+
     kwargs = dict(
         agent_engine=_build_app(cfg),
         requirements=requirements,
