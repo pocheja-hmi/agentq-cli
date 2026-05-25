@@ -48,6 +48,27 @@ STATE_SCHEMA_VERSION = 1
 
 # ─── State file I/O ──────────────────────────────────────────────────────────
 
+def _normalize_datetimes(obj: Any) -> Any:
+    """Convert any `datetime` values in a nested structure to canonical
+    ISO-8601 strings with `Z` suffix.
+
+    PyYAML's safe_load parses ISO timestamps into `datetime` objects, and
+    safe_dump then writes them back in YAML's own form (space-separated,
+    `+00:00` offset). That output is not valid ISO 8601, so the Node-side
+    zod validator rejects re-read state files. Normalizing before dump
+    keeps the on-disk format stable across read/write cycles.
+    """
+    if isinstance(obj, dt.datetime):
+        if obj.tzinfo is None:
+            obj = obj.replace(tzinfo=dt.timezone.utc)
+        return obj.isoformat().replace("+00:00", "Z")
+    if isinstance(obj, dict):
+        return {k: _normalize_datetimes(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_normalize_datetimes(v) for v in obj]
+    return obj
+
+
 def read_state(path: str | Path) -> dict[str, Any] | None:
     p = Path(path)
     if not p.is_file():
@@ -55,12 +76,19 @@ def read_state(path: str | Path) -> dict[str, Any] | None:
     body = p.read_text(encoding="utf-8").strip()
     if not body:
         return None
-    return yaml.safe_load(body) or None
+    # Normalize on read so any datetime objects PyYAML parsed become canonical
+    # ISO strings before downstream code sees them — keeps history entries
+    # stable when they're copied forward in cmd_apply.
+    return _normalize_datetimes(yaml.safe_load(body) or None)
 
 
 def write_state(path: str | Path, state: dict[str, Any]) -> None:
     Path(path).write_text(
-        yaml.safe_dump(state, sort_keys=False, default_flow_style=False),
+        yaml.safe_dump(
+            _normalize_datetimes(state),
+            sort_keys=False,
+            default_flow_style=False,
+        ),
         encoding="utf-8",
     )
 
