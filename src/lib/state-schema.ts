@@ -16,10 +16,16 @@
 // (locally-computed config_hash).
 import { z } from 'zod';
 
+// All ISO-8601 datetime fields in state.yaml accept BOTH the `Z`-suffix
+// form and explicit offsets (e.g. `+00:00`). Different Python versions of
+// agentq_runtime have emitted both shapes over time. Strict zod default
+// (Z-only) would reject the older form and break re-reads of state files
+// produced before the normalization was added.
+
 const KbDocumentSchema = z.object({
   filename:    z.string(),
   sha256:      z.string().regex(/^[a-f0-9]{64}$/, 'sha256 must be 64 lowercase hex chars'),
-  indexed_at:  z.string().datetime(),
+  indexed_at:  z.string().datetime({ offset: true }),
   document_id: z.string(),                  // Gemini Enterprise Search Document.name leaf
   gcs_uri:     z.string().regex(/^gs:\/\//),
   size_bytes:  z.number().int().nonnegative().optional(),
@@ -29,7 +35,7 @@ const EngineStateSchema = z.object({
   resource_name:         z.string(),
   display_name:          z.string(),
   config_hash:           z.string(),         // 'sha256:<64-hex>'
-  last_deployed_at:      z.string().datetime(),
+  last_deployed_at:      z.string().datetime({ offset: true }),
   last_deployed_sha:     z.string(),
   last_deployed_by:      z.string(),         // user email or SA
   runtime_version:       z.string(),         // agentq-cli version that did this deploy
@@ -56,7 +62,7 @@ const KbStateSchema = z.object({
 });
 
 const HistoryEntrySchema = z.object({
-  at:                  z.string().datetime(),
+  at:                  z.string().datetime({ offset: true }),
   sha:                 z.string(),
   actor:               z.string(),
   op:                  z.enum(['apply', 'import', 'destroy']),
