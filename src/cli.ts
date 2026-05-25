@@ -12,13 +12,15 @@ import { destroyCommand } from './commands/destroy.js';
 import { logsCommand } from './commands/logs.js';
 import { doctorCommand } from './commands/doctor.js';
 import { kbCommand } from './commands/kb.js';
+import { stateCommand } from './commands/state.js';
+import { setupCicdCommand } from './commands/setup-cicd.js';
 
 import { setVerbose, log } from './lib/logger.js';
 import { AgentqError } from './lib/errors.js';
 import { readPackageVersion } from './lib/paths.js';
 
 // Side-effect imports register concrete providers with the KBProvider registry.
-import './providers/vertex-ai-search.js';
+import './providers/gemini-enterprise-search.js';
 
 async function main(): Promise<void> {
   const version = await readPackageVersion();
@@ -37,11 +39,13 @@ async function main(): Promise<void> {
     .command(logsCommand)
     .command(doctorCommand)
     .command(kbCommand)
+    .command(stateCommand)
+    .command(setupCicdCommand)
     .demandCommand(1, 'Specify a command. Run `agentq --help` for the list.')
     .strict()
     .recommendCommands()
     .help('help').alias('help', 'h')
-    .epilog('Docs: https://github.com/pocheja-hmi/agentq-cli  (set AGENTQ_CLI_REPO env to override.)')
+    .epilog('Docs: https://github.com/HorizonMedia/agentq-cli  (set AGENTQ_CLI_REPO env to override.)')
     .fail((msg, err) => {
       if (err instanceof AgentqError) {
         log.error(err.message);

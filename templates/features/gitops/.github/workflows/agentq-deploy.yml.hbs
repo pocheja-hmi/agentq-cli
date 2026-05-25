@@ -1,0 +1,47 @@
+name: agentq-deploy
+
+# Calls the central agentq-actions reusable workflow.
+# Almost everything is configured in agentq.config.yaml; this file only
+# routes events → tiers and passes the right GCP project / SA values.
+#
+# To upgrade to a new agentq-actions release, bump the @vN tag below.
+# See: https://github.com/HorizonMedia/agentq-actions/releases
+
+on:
+  push:
+    branches:
+      - {{cicd.branch_dev}}
+      - {{cicd.branch_staging}}
+      - {{cicd.branch_prod}}
+  pull_request:
+    branches:
+      - {{cicd.branch_dev}}
+      - {{cicd.branch_staging}}
+      - {{cicd.branch_prod}}
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan only, no apply"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write      # OIDC → GCP
+  pull-requests: write # PR comments
+
+jobs:
+  deploy:
+    uses: {{cicd.actions_ref}}
+    with:
+      project_name: {{project.name}}
+      tier: ${{ github.ref_name == '{{cicd.branch_prod}}' && 'prod' || github.ref_name == '{{cicd.branch_staging}}' && 'staging' || 'dev' }}
+      gcp_project: ${{ (github.ref_name == '{{cicd.branch_prod}}' || github.ref_name == '{{cicd.branch_staging}}') && '{{cicd.prod_gcp}}' || '{{cicd.dev_gcp}}' }}
+      state_bucket: ${{ (github.ref_name == '{{cicd.branch_prod}}' || github.ref_name == '{{cicd.branch_staging}}') && '{{cicd.prod_state_bucket}}' || '{{cicd.dev_state_bucket}}' }}
+      deployer_service_account: ${{ github.event_name == 'pull_request' && format('agentq-plan@{0}.iam.gserviceaccount.com', (github.base_ref == '{{cicd.branch_prod}}' || github.base_ref == '{{cicd.branch_staging}}') && '{{cicd.prod_gcp}}' || '{{cicd.dev_gcp}}') || (github.ref_name == '{{cicd.branch_prod}}' && 'agentq-deploy-prod@{{cicd.prod_gcp}}.iam.gserviceaccount.com' || (github.ref_name == '{{cicd.branch_staging}}' && 'agentq-deploy-staging@{{cicd.prod_gcp}}.iam.gserviceaccount.com' || 'agentq-deploy-dev@{{cicd.dev_gcp}}.iam.gserviceaccount.com')) }}
+      # workload_identity_provider — print this with `agentq setup-cicd` and
+      # paste the full resource name here. Format:
+      #   projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/agentq-pool/providers/github
+      workload_identity_provider: "REPLACE_ME_with_value_printed_by_agentq_setup-cicd"
+      cli_version: v0.1.0
+      dry_run: ${{ inputs.dry_run == true }}

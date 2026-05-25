@@ -35,7 +35,7 @@ const FILE_TOOLS = [
 
 export function buildRuntimePackages(opts: PackageOptions): string[] {
   const out = [...BASE];
-  if (opts.kb === 'vertex-ai-search') out.push(...KB_VERTEX);
+  if (opts.kb === 'gemini-enterprise-search') out.push(...KB_VERTEX);
   if (opts.files) out.push(...FILE_TOOLS);
   return out;
 }

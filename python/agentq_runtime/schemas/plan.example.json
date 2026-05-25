@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "plan_id": "prod-3b9c2f1d-1715000000",
+    "generated_at": "2026-05-21T13:42:11Z",
+    "generated_by": "agentq-deploy-prod@my-prod-gcp.iam.gserviceaccount.com",
+    "source_sha": "3b9c2f1d",
+    "cli_version": "0.3.0"
+  },
+  "target": {
+    "project_name": "my-agent",
+    "tier": "prod",
+    "gcp_project": "my-prod-gcp",
+    "location": "us-central1",
+    "display_name": "My Agent (prod)"
+  },
+  "engine_plan": {
+    "mode": "update",
+    "resource_name": "projects/123/locations/us-central1/reasoningEngines/9876543210",
+    "config_hash_before": "sha256:1ee2c7a8f4...",
+    "config_hash_after":  "sha256:7af34cd11a...",
+    "config_diff": [
+      {
+        "field": "runtime.python_packages",
+        "before": ["google-adk>=1.27.0", "google-genai>=1.0.0"],
+        "after":  ["google-adk>=1.27.0", "google-genai>=1.0.0", "langchain==0.3.0"],
+        "requires_recreate": false
+      }
+    ]
+  },
+  "kb_plan": {
+    "action": "reimport",
+    "datastore_id": "my-agent-prod-corpus",
+    "datastore_created_by_plan": false,
+    "documents": {
+      "added": [
+        { "filename": "knowledge/faq.md", "sha256": "1a22b3c4d5e6f7081a22b3c4d5e6f7081a22b3c4d5e6f7081a22b3c4d5e6f708", "size_bytes": 1428, "gcs_uri": "gs://my-agent-prod-corpus/knowledge/faq.md" }
+      ],
+      "changed": [
+        { "filename": "knowledge/intro.md", "sha256": "6f9b1a2c3d4e5f60718293a4b5c6d7e80f1a2b3c4d5e6f70819a2b3c4d5e6f70", "size_bytes": 920, "gcs_uri": "gs://my-agent-prod-corpus/knowledge/intro.md", "document_id": "doc_5f2e91" }
+      ],
+      "removed": [],
+      "unchanged": [
+        { "filename": "knowledge/policies.pdf", "sha256": "abcdefabcdef0123456789abcdefabcdef0123456789abcdefabcdef01234567", "size_bytes": 31228, "gcs_uri": "gs://my-agent-prod-corpus/knowledge/policies.pdf", "document_id": "doc_7c1" }
+      ]
+    }
+  },
+  "runtime_plan": {
+    "python_packages": {
+      "added": ["langchain==0.3.0"],
+      "removed": [],
+      "version_changed": []
+    },
+    "env_vars": {
+      "added": [],
+      "removed": [],
+      "changed": []
+    }
+  },
+  "drift": {
+    "detected": false,
+    "details": []
+  },
+  "state_generation": 1715000000123456,
+  "risks": [
+    {
+      "severity": "warning",
+      "message": "New python package 'langchain==0.3.0' — review for licensing/security.",
+      "field": "runtime.python_packages"
+    },
+    {
+      "severity": "info",
+      "message": "1 KB file added; full re-import will take ~3 min."
+    }
+  ]
+}

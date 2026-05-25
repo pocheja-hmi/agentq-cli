@@ -73,7 +73,7 @@ def _build_app(cfg):
 def _layout_root(cfg) -> Path:
     """The directory we chdir into before calling agent_engines.create().
 
-    The Vertex AI SDK tars `extra_packages` paths relative to cwd. Whatever
+    The Gemini Enterprise SDK tars `extra_packages` paths relative to cwd. Whatever
     ends up at the tarball root is what `import <pkg>` can find inside the
     container. AgentQ's standard layout is:
 
@@ -131,17 +131,36 @@ def _normalize_extra_packages(cfg) -> list[str]:
     return out
 
 
-def _common_kwargs(cfg) -> dict:
+def _common_kwargs(cfg, target=None) -> dict:
+    """Build the kwargs dict that goes to agent_engines.create/update.
+
+    When `target` is supplied (tier mode), labels and the engine-runtime SA
+    come from the resolved target instead of the legacy deployment block.
+    Auto-injected env vars (KB_DATASTORE, MODEL) are also re-evaluated
+    against the target's tier so the deployed container points at the right
+    datastore.
+    """
     requirements = _ensure_required_packages(cfg.runtime.python_packages)
     added = set(requirements) - set(cfg.runtime.python_packages)
     if added:
         print(f"  [deploy] auto-adding required runtime packages: {sorted(added)}")
-    return dict(
+
+    env_vars = dict(cfg.runtime.env_vars)
+    if target is not None and target.datastore_resource:
+        # Override KB_DATASTORE for the specific tier we're deploying to —
+        # avoids the wrong tier's datastore leaking in from cfg.runtime.env_vars
+        # (which was populated from the default tier or legacy block at load).
+        env_vars["KB_DATASTORE"] = target.datastore_resource
+
+    kwargs = dict(
         agent_engine=_build_app(cfg),
         requirements=requirements,
         extra_packages=_normalize_extra_packages(cfg),
-        env_vars=cfg.runtime.env_vars,
+        env_vars=env_vars,
     )
+    if target is not None and target.labels:
+        kwargs["labels"] = target.labels
+    return kwargs
 
 
 def _with_layout_cwd(cfg, fn):
@@ -155,16 +174,25 @@ def _with_layout_cwd(cfg, fn):
         os.chdir(saved)
 
 
-def cmd_create(cfg) -> str:
+def cmd_create_for_target(cfg, target) -> str:
+    """Create an engine for an arbitrary resolved target.
+
+    Used by:
+      - cmd_create() in legacy mode (target = cfg.resolve_target(None)).
+      - state.cmd_apply() in tier mode after a `plan` says mode=create.
+
+    Single place that knows how to build a Reasoning Engine — keeps the
+    create logic from forking between deploy.py and state.py.
+    """
     from vertexai import agent_engines
-    print(f"  [deploy] creating Reasoning Engine for {cfg.project.display_name}")
+    print(f"  [deploy] creating Reasoning Engine for {target.display_name}")
 
     def _do() -> str:
-        kwargs = _common_kwargs(cfg)
-        kwargs["display_name"] = cfg.project.display_name
-        kwargs["description"] = cfg.project.description or cfg.project.display_name
-        if cfg.deployment.service_account:
-            kwargs["service_account"] = cfg.deployment.service_account
+        kwargs = _common_kwargs(cfg, target)
+        kwargs["display_name"] = target.display_name
+        kwargs["description"] = cfg.project.description or target.display_name
+        if target.runtime_service_account:
+            kwargs["service_account"] = target.runtime_service_account
         remote = agent_engines.create(**kwargs)
         print(f"  [deploy] ✓ created: {remote.resource_name}")
         return remote.resource_name
@@ -172,20 +200,52 @@ def cmd_create(cfg) -> str:
     return _with_layout_cwd(cfg, _do)
 
 
-def cmd_update(cfg, resource_name: str) -> str:
+def cmd_create(cfg) -> str:
+    """Legacy entry point — resolves to default target and calls the
+    target-aware version."""
+    target = cfg.resolve_target(None)
+    return cmd_create_for_target(cfg, target)
+
+
+class ResourceMissing(RuntimeError):
+    """Raised when the persisted resource_name doesn't exist on the server.
+
+    main() catches this and translates it into a distinct exit code so the
+    Node layer can render an actionable hint about --recreate instead of
+    dumping the SDK traceback.
+    """
+
+
+def cmd_update_for_target(cfg, target, resource_name: str) -> str:
+    """Update an engine for an arbitrary resolved target. See
+    cmd_create_for_target() for the rationale on the for_target split."""
     from vertexai import agent_engines
     print(f"  [deploy] updating {resource_name}")
 
     def _do() -> str:
-        remote = agent_engines.get(resource_name)
-        kwargs = _common_kwargs(cfg)
-        if cfg.deployment.service_account:
-            kwargs["service_account"] = cfg.deployment.service_account
+        try:
+            # Cheap existence check before the heavy build/serialize step.
+            remote = agent_engines.get(resource_name)
+        except Exception as e:
+            msg = str(e)
+            if "not found" in msg.lower() or "NotFound" in type(e).__name__:
+                raise ResourceMissing(resource_name) from e
+            raise
+
+        kwargs = _common_kwargs(cfg, target)
+        if target.runtime_service_account:
+            kwargs["service_account"] = target.runtime_service_account
         remote.update(**kwargs)
         print(f"  [deploy] ✓ updated: {resource_name}")
         return resource_name
 
     return _with_layout_cwd(cfg, _do)
+
+
+def cmd_update(cfg, resource_name: str) -> str:
+    """Legacy entry point. Resolves to default target then delegates."""
+    target = cfg.resolve_target(None)
+    return cmd_update_for_target(cfg, target, resource_name)
 
 
 def main() -> int:
@@ -221,7 +281,18 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 return 2
-            cmd_update(cfg, resource_name)
+            try:
+                cmd_update(cfg, resource_name)
+            except ResourceMissing as e:
+                # Distinct exit code 3 — the Node layer renders an actionable
+                # hint about --recreate. Avoids printing the SDK traceback
+                # which would otherwise dominate the user's terminal.
+                print(
+                    f"ERROR: Reasoning Engine {e} no longer exists. "
+                    "It was likely deleted in the Cloud console.",
+                    file=sys.stderr,
+                )
+                return 3
 
         # Post-deploy hook (optional).
         post = hookmod.load_hook(cfg.project_root, cfg.hooks.post_deploy)

@@ -7,6 +7,9 @@ import { ProjectPaths } from './paths.js';
 export interface KBContext {
   projectPaths: ProjectPaths;
   config: AgentqConfig;
+  /** Active tier (dev/staging/prod) or null in legacy mode. Forwarded to the
+   *  Python subcommands so they pick the right per-tier datastore. */
+  tier: string | null;
 }
 
 export interface KBProvider {

@@ -1,6 +1,12 @@
 // `agentq init` — interactive walkthrough.
 // Composes lib/scaffolder + lib/config; this command's only job is gathering
 // answers and assembling the template context. No filesystem ops here.
+//
+// GitOps support: when the user answers yes to "Enable GitOps?", we scaffold
+// a v2 config (gitops + tiers blocks) plus a GitHub Actions workflow + ops
+// docs. The legacy deployment block is still emitted for backwards-compat
+// with non-GitOps tooling, but tier_resolver.ts always prefers tiers.* when
+// gitops.enabled=true.
 import path from 'node:path';
 import { input, select, confirm, number } from '@inquirer/prompts';
 import type { CommandModule, Argv } from 'yargs';
@@ -27,6 +33,28 @@ function toSnakeCase(kebab: string): string {
 function defaultStagingBucket(project: string): string {
   return `gs://${project}-agentq-staging`;
 }
+
+function defaultStateBucket(project: string): string {
+  return `gs://${project}-agentq-state`;
+}
+
+interface GitopsAnswers {
+  enabled: boolean;
+  devGcp: string;
+  prodGcp: string;
+  branchDev: string;
+  branchStaging: string;
+  branchProd: string;
+  /** Computed display-name suffix per tier so prod / staging engines differ. */
+  suffixes: Record<'dev' | 'staging' | 'prod', string>;
+  /** Owner/name of the agentq-actions repo, e.g. "HorizonMedia/agentq-actions". */
+  actionsRepo: string;
+  /** Git ref on agentq-actions to pin to, e.g. "v1" or "v1.2.3". */
+  actionsRef: string;
+}
+
+const DEFAULT_ACTIONS_REPO = 'HorizonMedia/agentq-actions';
+const DEFAULT_ACTIONS_REF  = 'v1';
 
 async function gatherAnswers(args: Args): Promise<Record<string, unknown>> {
   const projectName = args.name ?? await input({
@@ -69,15 +97,15 @@ async function gatherAnswers(args: Args): Promise<Record<string, unknown>> {
   const kbProvider: KbProvider = await select({
     message: 'Knowledge base',
     choices: [
-      { value: 'none',             name: 'none              — no external knowledge' },
-      { value: 'vertex-ai-search', name: 'vertex-ai-search  — managed search datastore' },
+      { value: 'none',                      name: 'none                     — no external knowledge' },
+      { value: 'gemini-enterprise-search',  name: 'gemini-enterprise-search — managed search datastore' },
     ],
   });
 
   let datastoreId: string | null = null;
   let kbBucket: string | null = null;
   let kbLocation = 'global';
-  if (kbProvider === 'vertex-ai-search') {
+  if (kbProvider === 'gemini-enterprise-search') {
     datastoreId = await input({
       message: 'Datastore ID (short)',
       default: `${projectName}-corpus`,
@@ -90,7 +118,7 @@ async function gatherAnswers(args: Args): Promise<Record<string, unknown>> {
     kbLocation = await input({ message: 'Datastore location', default: 'global' });
   }
 
-  const gcpProject = await input({ message: 'GCP project ID' });
+  const gcpProject = await input({ message: 'GCP project ID (default tier — dev for GitOps)' });
   const location = await input({ message: 'Agent Engine region', default: 'us-central1' });
   if (location === 'global') {
     throw new AgentqError('Agent Engine requires a regional location, not "global".');
@@ -104,7 +132,7 @@ async function gatherAnswers(args: Args): Promise<Record<string, unknown>> {
   const model = await input({ message: 'Default Gemini model', default: 'gemini-2.5-flash' });
 
   const useServiceAccount = await confirm({
-    message: 'Use a user-managed runtime service account at deploy time?',
+    message: 'Use a user-managed runtime service account at deploy time? (Skip if using GitOps — setup-cicd creates SAs per-tier.)',
     default: false,
   });
   const serviceAccount = useServiceAccount
@@ -131,24 +159,102 @@ async function gatherAnswers(args: Args): Promise<Record<string, unknown>> {
     default: true,
   });
 
+  const gitopsEnabled = await confirm({
+    message: 'Enable GitOps (deploy via GitHub Actions on dev/staging/main branches)?',
+    default: true,
+  });
+
+  let gitops: GitopsAnswers;
+  if (gitopsEnabled) {
+    const devGcp = await input({ message: 'Dev GCP project ID', default: gcpProject });
+    const prodGcp = await input({ message: 'Prod GCP project ID (staging + prod tiers live here)', default: devGcp });
+    const branchProd = await input({ message: 'Prod branch name', default: 'main' });
+    const branchStaging = await input({ message: 'Staging branch name', default: 'staging' });
+    const branchDev = await input({ message: 'Dev branch name', default: 'dev' });
+    // Allow override via env so teams that have migrated agentq-actions to a
+    // different org don't have to re-type the default every project.
+    const repoDefault = process.env.AGENTQ_ACTIONS_REPO ?? DEFAULT_ACTIONS_REPO;
+    const refDefault  = process.env.AGENTQ_ACTIONS_REF  ?? DEFAULT_ACTIONS_REF;
+    const actionsRepo = await input({
+      message: 'agentq-actions repo (org/repo) — must be pushed AND have a matching ref',
+      default: repoDefault,
+      validate: (v) => /^[^/]+\/[^/]+$/.test(v) || 'Must be in org/repo form.',
+    });
+    const actionsRef = await input({
+      message: 'agentq-actions ref to pin (tag or branch; e.g. v1, v1.0.0)',
+      default: refDefault,
+    });
+    gitops = {
+      enabled: true,
+      devGcp, prodGcp,
+      branchDev, branchStaging, branchProd,
+      suffixes: { dev: ' (dev)', staging: ' (staging)', prod: ' (prod)' },
+      actionsRepo, actionsRef,
+    };
+  } else {
+    gitops = {
+      enabled: false,
+      devGcp: gcpProject, prodGcp: gcpProject,
+      branchDev: 'dev', branchStaging: 'staging', branchProd: 'main',
+      suffixes: { dev: '', staging: '', prod: '' },
+      actionsRepo: DEFAULT_ACTIONS_REPO, actionsRef: DEFAULT_ACTIONS_REF,
+    };
+  }
+
   return {
     projectName, packageName, description, displayName,
     pattern, subAgents,
     kbProvider, datastoreId, kbBucket, kbLocation,
     gcpProject, location, stagingBucket, model, serviceAccount,
     obsLevel, includeSampleTool, includeFileTools,
+    gitops,
+  };
+}
+
+interface Answers {
+  projectName: string; packageName: string; description: string; displayName: string;
+  pattern: Pattern; subAgents: number;
+  kbProvider: KbProvider; datastoreId: string | null; kbBucket: string | null; kbLocation: string;
+  gcpProject: string; location: string; stagingBucket: string; model: string;
+  serviceAccount: string | null;
+  obsLevel: ObservabilityLevel; includeSampleTool: boolean; includeFileTools: boolean;
+  gitops: GitopsAnswers;
+}
+
+function buildTiersBlock(a: Answers): Record<string, unknown> | undefined {
+  if (!a.gitops.enabled) return undefined;
+  const mk = (
+    tierName: 'dev' | 'staging' | 'prod',
+    gcp: string,
+    suffix: string,
+  ): Record<string, unknown> => ({
+    gcp_project: gcp,
+    location: a.location,
+    staging_bucket: `gs://${gcp}-agentq-staging`,
+    state_bucket: defaultStateBucket(gcp),
+    deployer_service_account: `agentq-deploy-${tierName}@${gcp}.iam.gserviceaccount.com`,
+    runtime_service_account: `agentq-runtime-${tierName}@${gcp}.iam.gserviceaccount.com`,
+    display_name_suffix: suffix,
+    labels: { env: tierName, 'managed-by': 'agentq' },
+    kb: a.kbProvider === 'gemini-enterprise-search' ? {
+      datastore_id: `${a.projectName}-${tierName}-corpus`,
+      bucket: `${a.projectName}-${tierName}-corpus`,
+      location: a.kbLocation,
+      allow_freeform_mutation: tierName === 'dev',
+    } : {
+      datastore_id: null, bucket: null,
+      location: 'global', allow_freeform_mutation: tierName === 'dev',
+    },
+  });
+  return {
+    dev:     mk('dev',     a.gitops.devGcp,  a.gitops.suffixes.dev),
+    staging: mk('staging', a.gitops.prodGcp, a.gitops.suffixes.staging),
+    prod:    mk('prod',    a.gitops.prodGcp, a.gitops.suffixes.prod),
   };
 }
 
 async function buildContext(answers: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const a = answers as {
-    projectName: string; packageName: string; description: string; displayName: string;
-    pattern: Pattern; subAgents: number;
-    kbProvider: KbProvider; datastoreId: string | null; kbBucket: string | null; kbLocation: string;
-    gcpProject: string; location: string; stagingBucket: string; model: string;
-    serviceAccount: string | null;
-    obsLevel: ObservabilityLevel; includeSampleTool: boolean; includeFileTools: boolean;
-  };
+  const a = answers as unknown as Answers;
 
   const stages = Array.from({ length: a.subAgents }, (_, i) => ({
     index: i + 1,
@@ -156,6 +262,18 @@ async function buildContext(answers: Record<string, unknown>): Promise<Record<st
     isFirst: i === 0,
     isLast:  i === a.subAgents - 1,
   }));
+
+  const tiers = buildTiersBlock(a);
+  const gitops = a.gitops.enabled ? {
+    enabled: true,
+    default_tier: 'dev',
+    branch_map: {
+      dev: a.gitops.branchDev,
+      staging: a.gitops.branchStaging,
+      prod: a.gitops.branchProd,
+    },
+    state_path_template: 'agentq/{project_name}/{tier}/state.yaml',
+  } : null;
 
   return {
     project: {
@@ -189,15 +307,29 @@ async function buildContext(answers: Record<string, unknown>): Promise<Record<st
       location: a.kbLocation,
     },
     observability: { level: a.obsLevel, tracing: true },
+    gitops,
+    tiers,
+    // Exposed to templates for ${variable} substitution.
+    cicd: a.gitops.enabled ? {
+      branch_dev: a.gitops.branchDev,
+      branch_staging: a.gitops.branchStaging,
+      branch_prod: a.gitops.branchProd,
+      dev_gcp: a.gitops.devGcp,
+      prod_gcp: a.gitops.prodGcp,
+      dev_state_bucket: defaultStateBucket(a.gitops.devGcp),
+      prod_state_bucket: defaultStateBucket(a.gitops.prodGcp),
+      actions_ref: `${a.gitops.actionsRepo}/.github/workflows/deploy.yml@${a.gitops.actionsRef}`,
+    } : null,
     flags: {
       pattern_single:     a.pattern === 'single',
       pattern_multi:      a.pattern === 'multi',
       pattern_sequential: a.pattern === 'sequential',
       pattern_hybrid:     a.pattern === 'hybrid',
       kb_enabled:         a.kbProvider !== 'none',
-      kb_vertex:          a.kbProvider === 'vertex-ai-search',
+      kb_vertex:          a.kbProvider === 'gemini-enterprise-search',
       include_sample_tool: a.includeSampleTool,
       include_file_tools: a.includeFileTools,
+      gitops_enabled:     a.gitops.enabled,
       obs_basic:          a.obsLevel === 'basic',
       obs_standard:       a.obsLevel === 'standard',
       obs_advanced:       a.obsLevel === 'advanced',
@@ -220,10 +352,11 @@ export const initCommand: CommandModule<{}, Args> = {
 
     const projectDir = path.join(process.cwd(), (ctx.project as { name: string }).name);
     const sources = ['common', `patterns/${(ctx.agent as { pattern: string }).pattern}`];
-    const flags = ctx.flags as { kb_vertex: boolean; include_file_tools: boolean };
+    const flags = ctx.flags as { kb_vertex: boolean; include_file_tools: boolean; gitops_enabled: boolean };
     if (flags.include_file_tools) sources.push('features/file-tools');
+    if (flags.gitops_enabled)     sources.push('features/gitops');
     if (flags.kb_vertex) {
-      const provider = listProviders().find((p) => p.id === 'vertex-ai-search');
+      const provider = listProviders().find((p) => p.id === 'gemini-enterprise-search');
       if (provider) sources.push(...provider.templateSources());
     }
 
@@ -232,13 +365,17 @@ export const initCommand: CommandModule<{}, Args> = {
       destination: projectDir, context: ctx, sources, overwrite: argv.force,
     });
 
-    // Write the canonical agentq.config.yaml from the validated schema.
-    const cfgInput = {
-      schema_version: 1,
+    // Build the canonical agentq.config.yaml via zod. v2 when GitOps enabled.
+    const cfgInput: Record<string, unknown> = {
+      schema_version: flags.gitops_enabled ? 2 : 1,
       project: ctx.project, agent: ctx.agent, deployment: ctx.deployment,
       runtime: ctx.runtime, knowledge_base: ctx.knowledge_base,
       observability: ctx.observability, hooks: { pre_deploy: null, post_deploy: null },
     };
+    if (flags.gitops_enabled) {
+      cfgInput.gitops = ctx.gitops;
+      cfgInput.tiers  = ctx.tiers;
+    }
     const parsed = AgentqConfigSchema.parse(cfgInput);
     await writeConfig(path.join(projectDir, 'agentq.config.yaml'), parsed);
 
@@ -248,10 +385,23 @@ export const initCommand: CommandModule<{}, Args> = {
     log.raw(`  cd ${(ctx.project as { name: string }).name}`);
     log.raw('  cp .env.example .env       # fill in any blank values');
     log.raw('  agentq doctor              # verify auth, APIs, config');
-    if ((ctx.flags as { kb_enabled: boolean }).kb_enabled) {
-      log.raw('  agentq kb create-bucket && agentq kb upload && agentq kb create-datastore && agentq kb import');
+    if (flags.gitops_enabled) {
+      log.raw('');
+      log.raw('GitOps bootstrap (run ONCE per GCP project, by an ops user):');
+      const cicd = ctx.cicd as { dev_gcp: string; prod_gcp: string };
+      log.raw(`  agentq setup-cicd --gcp-project ${cicd.dev_gcp}  --github-org <ORG> --github-repo <REPO> --tiers dev`);
+      if (cicd.prod_gcp !== cicd.dev_gcp) {
+        log.raw(`  agentq setup-cicd --gcp-project ${cicd.prod_gcp} --github-org <ORG> --github-repo <REPO> --tiers staging --tiers prod`);
+      }
+      log.raw('');
+      log.raw('Then push to the dev branch — the workflow takes over from there.');
+      log.raw('See docs/CICD_SETUP.md for the full ops checklist.');
+    } else {
+      if ((ctx.flags as { kb_enabled: boolean }).kb_enabled) {
+        log.raw('  agentq kb create-bucket && agentq kb upload && agentq kb create-datastore && agentq kb import');
+      }
+      log.raw('  agentq deploy              # creates the Reasoning Engine');
     }
-    log.raw('  agentq deploy              # creates the Reasoning Engine');
     log.raw('');
   },
 };

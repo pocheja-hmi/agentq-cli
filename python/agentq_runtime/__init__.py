@@ -5,7 +5,7 @@ Modules:
     deploy       — create / update Reasoning Engines
     destroy      — delete Reasoning Engines
     list_engines — list deployments
-    kb           — manage Vertex AI Search datastores
+    kb           — manage Gemini Enterprise Search datastores
     hooks        — load optional project deploy_hooks.py
     _silence     — suppress harmless SDK noise unless --verbose
     _sdk_compat  — monkey-patch known Vertex SDK bugs

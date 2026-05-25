@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/HorizonMedia/agentq-cli/schemas/plan-v1.json",
+  "title": "AgentQ Deploy Plan",
+  "description": "The artifact produced by `agentq state plan` and consumed by `agentq state apply` plus agentq-actions' PR-comment + step-summary renderers. This file is the cross-repo integration contract: every field is referenced by either the CLI's apply path or the action's render scripts. Adding a field is non-breaking; renaming or removing a field is a major-version bump on both sides.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "metadata",
+    "target",
+    "engine_plan",
+    "kb_plan",
+    "runtime_plan",
+    "drift",
+    "state_generation"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Plan schema version. Increment requires a major-version bump in BOTH agentq-cli and agentq-actions, with a migration entry in each repo's CHANGELOG.",
+      "const": 1
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan_id", "generated_at", "generated_by", "source_sha", "cli_version"],
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "description": "Stable identifier for this plan instance, used to label PR comments and artifacts. Format: '<tier>-<short-sha>-<unix-ts>'."
+        },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "generated_by": {
+          "type": "string",
+          "description": "User email or service account email — whoever ran `agentq state plan`."
+        },
+        "source_sha": {
+          "type": "string",
+          "description": "git HEAD when plan was computed. Apply step compares against current HEAD; mismatch is informational, not fatal."
+        },
+        "cli_version": { "type": "string" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_name", "tier", "gcp_project", "location"],
+      "properties": {
+        "project_name": {
+          "type": "string",
+          "description": "From agentq.config.yaml::project.name — the canonical key for state lookup. NOT the GitHub repo name."
+        },
+        "tier": { "enum": ["dev", "staging", "prod"] },
+        "gcp_project": { "type": "string" },
+        "location": { "type": "string" },
+        "display_name": {
+          "type": "string",
+          "description": "Composed display name (project.display_name + tier.display_name_suffix). Used for log messages and PR comments."
+        }
+      }
+    },
+    "engine_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "config_hash_after"],
+      "properties": {
+        "mode": {
+          "description": "What will happen to the Reasoning Engine. 'no_op' = config matches state exactly. 'create' = no engine yet. 'update' = engine exists, config drift detected. 'recreate' = a field changed that requires destroying and rebuilding (e.g. region change).",
+          "enum": ["no_op", "create", "update", "recreate"]
+        },
+        "resource_name": {
+          "type": ["string", "null"],
+          "description": "Existing engine resource name. Null when mode=create. Echoed back as the apply step's output."
+        },
+        "config_hash_before": {
+          "type": ["string", "null"],
+          "description": "Hash from state.yaml. Null on first deploy."
+        },
+        "config_hash_after": {
+          "type": "string",
+          "description": "Hash computed from local source. Apply step verifies this still matches at execution time; mismatch = drift, apply aborts."
+        },
+        "config_diff": {
+          "type": "array",
+          "description": "Field-by-field diff. Empty when mode=no_op. PR comment renders the user-facing subset.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "before", "after"],
+            "properties": {
+              "field": {
+                "type": "string",
+                "description": "Dotted path into the config, e.g. 'runtime.model' or 'tiers.prod.labels.env'."
+              },
+              "before": {},
+              "after": {},
+              "requires_recreate": {
+                "type": "boolean",
+                "default": false,
+                "description": "When true, this change forces engine_plan.mode=recreate."
+              }
+            }
+          }
+        }
+      }
+    },
+    "kb_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "datastore_id", "documents"],
+      "properties": {
+        "action": {
+          "description": "'skip' = tier policy says no KB mutation (e.g. staging without override). 'no_op' = nothing changed. 'reimport' = mutations queued.",
+          "enum": ["skip", "no_op", "reimport"]
+        },
+        "datastore_id": { "type": ["string", "null"] },
+        "datastore_created_by_plan": {
+          "type": "boolean",
+          "default": false,
+          "description": "True on the first deploy when the datastore doesn't exist yet and we'll create it. Distinguishes a brand-new corpus from an updated one in the PR comment."
+        },
+        "documents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["added", "changed", "removed", "unchanged"],
+          "properties": {
+            "added":     { "type": "array", "items": { "$ref": "#/$defs/kbDoc" } },
+            "changed":   { "type": "array", "items": { "$ref": "#/$defs/kbDoc" } },
+            "removed":   { "type": "array", "items": { "$ref": "#/$defs/kbDoc" } },
+            "unchanged": { "type": "array", "items": { "$ref": "#/$defs/kbDoc" } }
+          }
+        }
+      }
+    },
+    "runtime_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["python_packages", "env_vars"],
+      "properties": {
+        "python_packages": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["added", "removed", "version_changed"],
+          "properties": {
+            "added":   { "type": "array", "items": { "type": "string" } },
+            "removed": { "type": "array", "items": { "type": "string" } },
+            "version_changed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "from", "to"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "from": { "type": "string" },
+                  "to":   { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "env_vars": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["added", "removed", "changed"],
+          "properties": {
+            "added":   { "type": "array", "items": { "type": "string" } },
+            "removed": { "type": "array", "items": { "type": "string" } },
+            "changed": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "drift": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["detected", "details"],
+      "properties": {
+        "detected": {
+          "type": "boolean",
+          "description": "True when the deployed reality differs from what state.yaml says it should be — e.g. someone deleted the engine in the console, or a KB document was removed out-of-band."
+        },
+        "details": {
+          "type": "array",
+          "description": "Human-readable lines describing each drift event.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "state_generation": {
+      "type": ["integer", "null"],
+      "description": "GCS object generation of the state.yaml this plan was computed against. apply step asserts the current generation still matches; if not, a concurrent deploy happened and we abort with a clear error. Null = state file didn't exist when plan was computed (first deploy)."
+    },
+    "risks": {
+      "type": "array",
+      "description": "Optional advisory items the PR comment surfaces in a 'Risk markers' section. Not blocking — drift gating + tier policy are the actual gates.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "message"],
+        "properties": {
+          "severity": { "enum": ["info", "warning", "error"] },
+          "message":  { "type": "string" },
+          "field":    { "type": "string", "description": "Optional dotted path the risk pertains to." }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "kbDoc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "sha256"],
+      "properties": {
+        "filename":   { "type": "string" },
+        "sha256":     { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "gcs_uri":    { "type": "string", "pattern": "^gs://" },
+        "document_id": {
+          "type": "string",
+          "description": "Gemini Enterprise Search Document.name leaf. Present for changed/removed/unchanged. Absent for added (assigned on import)."
+        }
+      }
+    }
+  }
+}

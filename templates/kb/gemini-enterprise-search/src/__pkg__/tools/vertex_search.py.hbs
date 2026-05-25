@@ -1,4 +1,4 @@
-"""Vertex AI Search FunctionTool.
+"""Gemini Enterprise Search FunctionTool.
 
 Reads the datastore resource path from KB_DATASTORE — set automatically by
 agentq-cli at deploy time from agentq.config.yaml.
@@ -11,7 +11,7 @@ from ..config import get_settings
 
 
 def vertex_ai_search(query: str) -> str:
-    """Search the configured Vertex AI Search datastore.
+    """Search the configured Gemini Enterprise Search datastore.
 
     Args:
         query: Natural-language search query.

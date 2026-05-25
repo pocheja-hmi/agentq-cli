@@ -1,4 +1,4 @@
-"""Compatibility shims for the Vertex AI Python SDK.
+"""Compatibility shims for the Gemini Enterprise Python SDK.
 
 This module patches known SDK bugs that block AgentQ deployments. It is
 imported at the very top of every CLI entry point (deploy / list / destroy)

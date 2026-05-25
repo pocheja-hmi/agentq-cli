@@ -19,10 +19,10 @@ override it any time with `AGENTQ_CLI_REPO`:
 
 ```bash
 # Default upstream (current location)
-npm install -g github:pocheja-hmi/agentq-cli
+npm install -g github:HorizonMedia/agentq-cli
 
 # Pin to a tagged release
-npm install -g github:pocheja-hmi/agentq-cli#v0.1.0
+npm install -g github:HorizonMedia/agentq-cli#v0.1.0
 
 # Override (e.g. after migration to an org repo)
 export AGENTQ_CLI_REPO=github:my-org/agentq-cli#v0.1.0
@@ -41,7 +41,7 @@ agentq --help
 - A Node CLI (`agentq`) that handles scaffolding, dispatch, and project
   management.
 - A bundled Python runtime that handles deploy / list / destroy / KB ops via
-  the official Vertex AI SDKs. The first time you run `agentq deploy` (or
+  the official Gemini Enterprise SDKs. The first time you run `agentq deploy` (or
   any KB command) inside a project, the CLI creates a `.agentq/venv`
   in that project and installs Python dependencies. You don't manage Python
   manually.
@@ -53,7 +53,7 @@ You need three things on your machine before installing `agentq-cli`:
 | Tool       | Minimum version | Why                                                |
 | ---------- | --------------- | -------------------------------------------------- |
 | **Node**   | 18+             | Runs the CLI itself.                               |
-| **Python** | 3.10+           | Runs the bundled runtime that talks to Vertex AI.  |
+| **Python** | 3.10+           | Runs the bundled runtime that talks to Gemini Enterprise.  |
 | **gcloud** | latest          | Auth + GCP API enablement.                         |
 
 The CLI auto-detects `python3.10`, `python3.11`, `python3.12`, `python3`, or
@@ -290,13 +290,13 @@ browser window — log in with your GCP-enabled work account:
 
 ```bash
 gcloud auth login                         # CLI session
-gcloud auth application-default login     # for SDK calls (Vertex AI, GCS, …)
+gcloud auth application-default login     # for SDK calls (Gemini Enterprise, GCS, …)
 gcloud config set project <your-project>
 ```
 
 The second command is the one most people forget, and it's the one that
 matters most for `agentq-cli` — the bundled Python runtime uses
-Application Default Credentials when calling Vertex AI APIs.
+Application Default Credentials when calling Gemini Enterprise APIs.
 
 Sanity-check:
 
@@ -374,7 +374,7 @@ The number of sub-agents / stages is asked for during `init` (or passed as
 
 ### Knowledge-base providers
 
-v1 ships with **Vertex AI Search**. The KB layer is behind a `KBProvider`
+v1 ships with **Gemini Enterprise Search**. The KB layer is behind a `KBProvider`
 interface, so additional providers (Drive, GCS-folder RAG, etc.) can be
 added without changing scaffolded projects.
 
@@ -509,7 +509,7 @@ Because every project shares the same config shape:
 The CLI is versioned with semver. Install a specific tag:
 
 ```bash
-npm install -g github:pocheja-hmi/agentq-cli#v0.1.0
+npm install -g github:HorizonMedia/agentq-cli#v0.1.0
 ```
 
 When the upstream repository changes location, update once:
@@ -527,7 +527,7 @@ Bundled Python dependencies are version-pinned alongside the CLI release;
 ## Development
 
 ```bash
-git clone git@github.com:pocheja-hmi/agentq-cli.git
+git clone git@github.com:HorizonMedia/agentq-cli.git
 cd agentq-cli
 npm install
 npm run build

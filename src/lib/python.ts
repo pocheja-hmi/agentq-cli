@@ -1,7 +1,7 @@
 // Centralises Python invocation. The CLI ships a Python runtime alongside
 // the TS code; commands that need it call ensureVenv() first, then runPython().
 //
-// One reason this exists: Vertex AI Agent Engine has no Node SDK. Deploying,
+// One reason this exists: Agent Engine on Gemini Enterprise has no Node SDK. Deploying,
 // listing, and destroying Reasoning Engines all require the python `vertexai`
 // package. We isolate that here so the rest of the CLI stays Python-agnostic.
 import path from 'node:path';

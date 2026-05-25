@@ -2,6 +2,12 @@
 // Every command that reads the config goes through loadConfig() — schema
 // validation happens in exactly one place (DRY) and the rest of the codebase
 // works against a strongly-typed object (single responsibility per consumer).
+//
+// Schema versions:
+//   1 — original layout (deployment.* + knowledge_base.* singletons).
+//   2 — adds gitops.* and tiers.* for multi-tier GitOps deploys. The legacy
+//       deployment/knowledge_base blocks remain optional for backwards compat;
+//       gitops.enabled=true requires tiers.* to be populated.
 import fs from 'fs-extra';
 import YAML from 'yaml';
 import { z } from 'zod';
@@ -10,11 +16,34 @@ import { AgentqError } from './errors.js';
 export const PATTERNS = ['single', 'multi', 'sequential', 'hybrid'] as const;
 export type Pattern = (typeof PATTERNS)[number];
 
-export const KB_PROVIDERS = ['none', 'vertex-ai-search'] as const;
+// Canonical KB provider ids. The string is what gets written into
+// agentq.config.yaml and state.yaml. Old projects still have
+// `provider: vertex-ai-search` in their YAML — `kbProviderField` accepts
+// it as a legacy alias and normalises to the canonical name on load, so
+// no migration step is required for existing teams.
+export const KB_PROVIDERS = ['none', 'gemini-enterprise-search'] as const;
 export type KbProvider = (typeof KB_PROVIDERS)[number];
+
+// Legacy provider names that get rewritten to the canonical form on parse.
+// Add new entries here when we deprecate-but-still-accept other names.
+export const LEGACY_KB_PROVIDER_ALIASES: Record<string, KbProvider> = {
+  'vertex-ai-search': 'gemini-enterprise-search',
+};
+
+/** A zod schema that accepts canonical KB provider names + legacy aliases,
+ *  and always produces the canonical name after parsing. */
+export const kbProviderField = z.preprocess(
+  (val) => (typeof val === 'string' && val in LEGACY_KB_PROVIDER_ALIASES
+    ? LEGACY_KB_PROVIDER_ALIASES[val]!
+    : val),
+  z.enum(KB_PROVIDERS),
+);
 
 export const OBSERVABILITY_LEVELS = ['basic', 'standard', 'advanced'] as const;
 export type ObservabilityLevel = (typeof OBSERVABILITY_LEVELS)[number];
+
+export const TIERS = ['dev', 'staging', 'prod'] as const;
+export type Tier = (typeof TIERS)[number];
 
 const ProjectSchema = z.object({
   name:         z.string().regex(/^[a-z][a-z0-9-]*$/, 'must be kebab-case'),
@@ -49,7 +78,8 @@ const RuntimeSchema = z.object({
 });
 
 const KnowledgeBaseSchema = z.object({
-  provider:     z.enum(KB_PROVIDERS).default('none'),
+  // Use kbProviderField so legacy `vertex-ai-search` rewrites to canonical.
+  provider:     kbProviderField.default('none'),
   datastore_id: z.string().nullable().default(null),
   bucket:       z.string().nullable().default(null),
   location:     z.string().default('global'),
@@ -65,8 +95,53 @@ const HooksSchema = z.object({
   post_deploy: z.string().nullable().default(null),
 });
 
+// ────────────────────────────────────────────────────────────────────────────
+// GitOps additions (schema_version >= 2)
+// ────────────────────────────────────────────────────────────────────────────
+
+// Per-tier KB block. `allow_freeform_mutation: true` is the dev-tier default
+// — it lets a developer run `agentq kb upload --tier dev` locally without
+// passing --allow-prod-kb-mutation. Staging/prod default to false so the
+// only path that mutates them is via GitOps merges.
+const TierKbSchema = z.object({
+  datastore_id:            z.string().nullable().default(null),
+  bucket:                  z.string().nullable().default(null),
+  location:                z.string().default('global'),
+  allow_freeform_mutation: z.boolean().default(false),
+});
+
+const TierSchema = z.object({
+  gcp_project:              z.string(),
+  location:                 z.string().default('us-central1'),
+  staging_bucket:           z.string().regex(/^gs:\/\//, 'must start with gs://'),
+  state_bucket:             z.string().regex(/^gs:\/\//, 'must start with gs://'),
+  // Two SAs per tier (per locked design):
+  //   deployer_service_account → what GitHub Actions impersonates via WIF.
+  //   runtime_service_account  → what the deployed engine runs as.
+  // Keeping the legacy `service_account` field name would conflate the two.
+  deployer_service_account: z.string().nullable().default(null),
+  runtime_service_account:  z.string().nullable().default(null),
+  display_name_suffix:      z.string().default(''),
+  labels:                   z.record(z.string()).default({}),
+  kb:                       TierKbSchema.default({}),
+});
+
+const GitopsSchema = z.object({
+  enabled:      z.boolean().default(false),
+  default_tier: z.enum(TIERS).default('dev'),
+  branch_map:   z.record(z.string()).default({ dev: 'dev', staging: 'staging', prod: 'main' }),
+  state_path_template: z.string().default('agentq/{project_name}/{tier}/state.yaml'),
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Top-level config schema
+// ────────────────────────────────────────────────────────────────────────────
+
 export const AgentqConfigSchema = z.object({
-  schema_version: z.literal(1).default(1),
+  // Union accepts both versions; loadConfig() pre-processes v2 YAMLs to
+  // synthesize a `deployment` block from the default tier when absent, so
+  // every consumer of cfg.deployment.* keeps working unchanged.
+  schema_version: z.union([z.literal(1), z.literal(2)]).default(2),
   project:       ProjectSchema,
   agent:         AgentSchema,
   deployment:    DeploymentSchema,
@@ -74,9 +149,63 @@ export const AgentqConfigSchema = z.object({
   knowledge_base: KnowledgeBaseSchema.default({}),
   observability: ObservabilitySchema.default({}),
   hooks:         HooksSchema.default({}),
+  // GitOps blocks — present only on v2 projects with GitOps enabled.
+  gitops:        GitopsSchema.optional(),
+  tiers:         z.record(z.enum(TIERS), TierSchema).optional(),
+}).superRefine((cfg, ctx) => {
+  // Invariant: if GitOps is enabled, tiers must be populated. We don't enforce
+  // "all 3 tiers present" — teams may run dev-only initially — but we do
+  // require at least one and the default_tier must exist in the map.
+  if (cfg.gitops?.enabled) {
+    if (!cfg.tiers || Object.keys(cfg.tiers).length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['tiers'],
+        message: 'gitops.enabled=true requires `tiers:` block with at least one tier.',
+      });
+    } else if (!cfg.tiers[cfg.gitops.default_tier]) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['gitops', 'default_tier'],
+        message: `default_tier '${cfg.gitops.default_tier}' is not defined in tiers.*.`,
+      });
+    }
+  }
 });
 
 export type AgentqConfig = z.infer<typeof AgentqConfigSchema>;
+export type TierConfig = z.infer<typeof TierSchema>;
+export type TierKbConfig = z.infer<typeof TierKbSchema>;
+export type GitopsConfig = z.infer<typeof GitopsSchema>;
+
+/**
+ * Pre-process raw YAML before schema validation. v2 GitOps projects MAY omit
+ * the `deployment:` block (it's redundant when `tiers.*` is the source of
+ * truth). We synthesize one from the default tier so the rest of the codebase
+ * — which still reads `cfg.deployment.*` — keeps working unchanged. As
+ * commands migrate to the tier-resolver, this synthesis becomes a no-op for
+ * them; until then it's the compatibility shim.
+ */
+function synthesizeDeploymentFromTier(raw: any): any {
+  if (!raw || typeof raw !== 'object') return raw;
+  if (raw.deployment) return raw;
+  const gitops = raw.gitops;
+  const tiers = raw.tiers;
+  if (!gitops?.enabled || !tiers) return raw;
+  const defaultTier = gitops.default_tier ?? 'dev';
+  const tier = tiers[defaultTier];
+  if (!tier) return raw;
+  return {
+    ...raw,
+    deployment: {
+      gcp_project:     tier.gcp_project,
+      location:        tier.location ?? 'us-central1',
+      staging_bucket:  tier.staging_bucket,
+      service_account: tier.runtime_service_account ?? null,
+      resource_name:   null,
+    },
+  };
+}
 
 export async function loadConfig(file: string): Promise<AgentqConfig> {
   if (!(await fs.pathExists(file))) {
@@ -92,6 +221,7 @@ export async function loadConfig(file: string): Promise<AgentqConfig> {
   } catch (e) {
     throw new AgentqError(`Could not parse YAML: ${(e as Error).message}`);
   }
+  parsed = synthesizeDeploymentFromTier(parsed);
   const result = AgentqConfigSchema.safeParse(parsed);
   if (!result.success) {
     const issues = result.error.issues

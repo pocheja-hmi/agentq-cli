@@ -1,7 +1,7 @@
 {
   "name": "agentq-cli",
   "version": "0.1.0",
-  "description": "Scaffold, deploy, and manage AgentQ Custom Agents (Vertex AI Agent Engine + ADK).",
+  "description": "Scaffold, deploy, and manage AgentQ Custom Agents (Agent Engine on Gemini Enterprise + ADK).",
   "type": "module",
   "bin": {
     "agentq": "./bin/agentq.js"
@@ -27,6 +27,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.19.0",
     "@inquirer/prompts": "^5.0.7",
     "chalk": "^5.3.0",
     "execa": "^9.3.0",
@@ -42,7 +43,14 @@
     "@types/yargs": "^17.0.32",
     "typescript": "^5.5.3"
   },
-  "keywords": ["agentq", "adk", "vertex-ai", "agent-engine", "scaffolding", "cli"],
+  "keywords": [
+    "agentq",
+    "adk",
+    "vertex-ai",
+    "agent-engine",
+    "scaffolding",
+    "cli"
+  ],
   "license": "UNLICENSED",
   "author": "AgentQ"
 }
