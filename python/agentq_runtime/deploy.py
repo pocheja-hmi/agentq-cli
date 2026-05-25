@@ -131,6 +131,33 @@ def _normalize_extra_packages(cfg) -> list[str]:
     return out
 
 
+def _filter_unsupported_kwargs(callable_or_method, kwargs: dict) -> dict:
+    """Drop kwargs the callable doesn't accept, with a warning.
+
+    `agent_engines.create()` / `.update()` accept different keyword sets
+    across google-cloud-aiplatform versions (e.g. `labels` was added then
+    removed between 1.x minor versions). Rather than pinning the SDK to a
+    narrow range, we discover what the installed version actually accepts
+    via `inspect.signature` and silently drop the rest. Worst case the user
+    loses a non-critical metadata feature; best case the deploy still works.
+    """
+    import inspect
+    try:
+        sig = inspect.signature(callable_or_method)
+    except (TypeError, ValueError):
+        return kwargs  # signature inspection failed; pass through
+    accepted = set(sig.parameters.keys())
+    accepts_var_kw = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
+    if accepts_var_kw:
+        return kwargs
+    dropped = [k for k in kwargs if k not in accepted]
+    if dropped:
+        print(f"  [deploy] note: dropping kwargs unsupported by installed SDK: {dropped}")
+    return {k: v for k, v in kwargs.items() if k in accepted}
+
+
 def _common_kwargs(cfg, target=None) -> dict:
     """Build the kwargs dict that goes to agent_engines.create/update.
 
@@ -193,7 +220,7 @@ def cmd_create_for_target(cfg, target) -> str:
         kwargs["description"] = cfg.project.description or target.display_name
         if target.runtime_service_account:
             kwargs["service_account"] = target.runtime_service_account
-        remote = agent_engines.create(**kwargs)
+        remote = agent_engines.create(**_filter_unsupported_kwargs(agent_engines.create, kwargs))
         print(f"  [deploy] ✓ created: {remote.resource_name}")
         return remote.resource_name
 
@@ -235,7 +262,7 @@ def cmd_update_for_target(cfg, target, resource_name: str) -> str:
         kwargs = _common_kwargs(cfg, target)
         if target.runtime_service_account:
             kwargs["service_account"] = target.runtime_service_account
-        remote.update(**kwargs)
+        remote.update(**_filter_unsupported_kwargs(remote.update, kwargs))
         print(f"  [deploy] ✓ updated: {resource_name}")
         return resource_name
 
