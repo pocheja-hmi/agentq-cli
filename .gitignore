@@ -1,5 +1,10 @@
 node_modules/
-dist/
+# NOTE: dist/ is COMMITTED on purpose. Consumers install via
+# `npm install -g github:HorizonMedia/agentq-cli#vX.Y.Z`, which performs
+# no build step. Shipping the compiled output avoids the entire class of
+# install-time tsc failures (missing @types, missing libs, npm/Node version
+# skew on the runner). CI verifies dist/ is fresh on every PR; the release
+# script refuses to tag if dist/ is stale.
 *.log
 .DS_Store
 .env

@@ -20,7 +20,6 @@
     "watch": "tsc -p tsconfig.json --watch",
     "clean": "rm -rf dist",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "prepare": "npm run build",
     "test": "node --test dist/**/*.test.js"
   },
   "engines": {

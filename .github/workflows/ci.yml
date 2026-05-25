@@ -1,0 +1,63 @@
+name: ci
+
+# Runs on every push to main and every PR. Three checks:
+#   1. TypeScript compiles cleanly (lint).
+#   2. The committed dist/ matches what a fresh build produces.
+#      This is the load-bearing check: consumers install via
+#      `npm install -g github:HorizonMedia/agentq-cli#vX` which does NOT
+#      run `tsc`. If a contributor edits src/ without rebuilding, the
+#      published CLI would silently keep the old behavior. CI catches it.
+#   3. Smoke-test `agentq --help` (cheap proof the entry point loads).
+#
+# IMPORTANT: `dist/` is COMMITTED in this repo on purpose — see .gitignore.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify-dist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Lint (tsc --noEmit)
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify dist/ is committed and up to date
+        # If `npm run build` mutated dist/, the contributor forgot to commit
+        # the regenerated output. Fail loudly with a diff so the fix is
+        # obvious: run `npm run build`, commit dist/, push.
+        run: |
+          if ! git diff --quiet -- dist/; then
+            echo "::error::dist/ is stale. Run 'npm run build', commit the result, and push."
+            echo ""
+            echo "Diff:"
+            git diff --stat -- dist/
+            echo ""
+            git diff -- dist/ | head -200
+            exit 1
+          fi
+          echo "✓ dist/ is fresh"
+
+      - name: Smoke-test agentq --help
+        run: |
+          node bin/agentq.js --version
+          node bin/agentq.js --help > /dev/null
+          echo "✓ CLI entry point loads"

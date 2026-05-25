@@ -127,6 +127,23 @@ run "lint (tsc --noEmit)" \
 run "build (tsc)" \
     npm run build
 
+# ─── Verify dist/ is fresh and committed ─────────────────────────────────────
+# Consumers install via `npm install -g github:.../#vX.Y.Z` which does NOT
+# run tsc. Whatever's in dist/ at the tag IS what they get. If src/ changed
+# without dist/ being rebuilt, the published CLI silently keeps old behavior.
+# This guard refuses to tag in that state.
+if ! $DRY_RUN; then
+    if ! git diff --quiet -- dist/; then
+        echo "ERROR: dist/ has uncommitted changes after build — the previous commit's"
+        echo "       dist/ is stale relative to src/. Commit the regenerated dist/ first:" >&2
+        echo "         git add dist/ && git commit -m 'rebuild dist/'" >&2
+        echo "       Then re-run this release." >&2
+        # Build already happened; src/ wasn't mutated, so reverting package.json is enough.
+        cleanup_failed_bump
+        exit 1
+    fi
+fi
+
 # Once we get past the gate, the release is in good shape; disable the trap so
 # we don't accidentally revert package.json when committing.
 trap - ERR
