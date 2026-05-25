@@ -94,7 +94,8 @@ async function handleDiff(argv: DiffArgs): Promise<void> {
   const args = await buildPyCommonArgs(cfg, target, pp.root, localPath);
   if (argv.json) args.push('--json');
   try {
-    await runPython(pp, 'agentq_runtime.state', ['diff', ...args]);
+    await runPython(pp, 'agentq_runtime.state', ['diff', ...args],
+      { extraRequirements: cfg.runtime?.python_packages ?? [] });
   } catch (err) {
     // Python returns 3 when drift is detected — surface as a deliberate
     // signal (Node exits with the same code).
@@ -119,7 +120,8 @@ async function handlePlan(argv: PlanArgs): Promise<void> {
   args.push('--plan-out', out);
   if (generation != null) args.push('--state-generation', String(generation));
 
-  await runPython(pp, 'agentq_runtime.state', ['plan', ...args]);
+  await runPython(pp, 'agentq_runtime.state', ['plan', ...args],
+    { extraRequirements: cfg.runtime?.python_packages ?? [] });
   log.success(`Plan written to ${out}`);
   log.raw(out);  // print path on its own line so CI can capture it
 }
@@ -136,7 +138,8 @@ async function handleApply(argv: ApplyArgs): Promise<void> {
   args.push('--plan', planPath);
   if (generation != null) args.push('--state-generation', String(generation));
 
-  await runPython(pp, 'agentq_runtime.state', ['apply', ...args]);
+  await runPython(pp, 'agentq_runtime.state', ['apply', ...args],
+    { extraRequirements: cfg.runtime?.python_packages ?? [] });
 
   // Python wrote a new state to localPath. Upload with concurrency check.
   await uploadStateIfChanged(target, localPath, existed ? generation : null);
