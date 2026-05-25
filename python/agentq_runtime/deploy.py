@@ -52,15 +52,32 @@ def _ensure_required_packages(packages: list[str]) -> list[str]:
     return out
 
 
-def _init_vertex(cfg) -> None:
+def _init_vertex(cfg, target=None) -> None:
+    """Initialize Vertex SDK before calling agent_engines.create()/.update().
+
+    In tier mode (target supplied) the project/location/staging_bucket come
+    from the resolved target so each tier deploys into its own GCP project
+    + bucket. Falls back to the legacy `cfg.deployment.*` block otherwise.
+
+    agent_engines.create() requires `staging_bucket` in vertexai.init() —
+    not in the create kwargs — so this must run before every create/update.
+    """
     # Re-run compat shim in case anything cleared/replaced the Logger class.
     from agentq_runtime import _sdk_compat
     _sdk_compat.install()
     import vertexai
+    if target is not None:
+        project = target.gcp_project
+        location = target.location
+        staging_bucket = target.staging_bucket
+    else:
+        project = cfg.deployment.gcp_project
+        location = cfg.deployment.location
+        staging_bucket = cfg.deployment.staging_bucket
     vertexai.init(
-        project=cfg.deployment.gcp_project,
-        location=cfg.deployment.location,
-        staging_bucket=cfg.deployment.staging_bucket,
+        project=project,
+        location=location,
+        staging_bucket=staging_bucket,
     )
 
 
@@ -211,6 +228,7 @@ def cmd_create_for_target(cfg, target) -> str:
     Single place that knows how to build a Reasoning Engine — keeps the
     create logic from forking between deploy.py and state.py.
     """
+    _init_vertex(cfg, target=target)
     from vertexai import agent_engines
     print(f"  [deploy] creating Reasoning Engine for {target.display_name}")
 
@@ -246,6 +264,7 @@ class ResourceMissing(RuntimeError):
 def cmd_update_for_target(cfg, target, resource_name: str) -> str:
     """Update an engine for an arbitrary resolved target. See
     cmd_create_for_target() for the rationale on the for_target split."""
+    _init_vertex(cfg, target=target)
     from vertexai import agent_engines
     print(f"  [deploy] updating {resource_name}")
 
