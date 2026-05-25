@@ -124,7 +124,8 @@ export const deployCommand: CommandModule<{}, Args> = {
     }
 
     try {
-      await runPython(pp, 'agentq_runtime.deploy', args);
+      await runPython(pp, 'agentq_runtime.deploy', args,
+        { extraRequirements: cfg.runtime?.python_packages ?? [] });
       log.success('Deploy completed.');
     } catch (err) {
       const code = (err as { exitCode?: number }).exitCode;
@@ -172,12 +173,13 @@ async function deployTierMode(
 
   const planArgs = ['plan', ...baseArgs, '--plan-out', planPath];
   if (generation !== null) planArgs.push('--state-generation', String(generation));
-  await runPython(pp, 'agentq_runtime.state', planArgs);
+  const extraReqs = { extraRequirements: cfg.runtime?.python_packages ?? [] };
+  await runPython(pp, 'agentq_runtime.state', planArgs, extraReqs);
 
   // 3. Apply the plan.
   const applyArgs = ['apply', ...baseArgs, '--plan', planPath];
   if (generation !== null) applyArgs.push('--state-generation', String(generation));
-  await runPython(pp, 'agentq_runtime.state', applyArgs);
+  await runPython(pp, 'agentq_runtime.state', applyArgs, extraReqs);
 
   // 4. Upload the mutated state back to GCS with concurrency check.
   await uploadStateIfChanged(target, localPath, existed ? generation : null);

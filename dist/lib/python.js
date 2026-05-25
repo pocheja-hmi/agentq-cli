@@ -87,19 +87,31 @@ export async function ensureVenv(projectPaths, opts = {}) {
         const sysPy = await findSystemPython();
         await runQuiet(`Creating Python venv at ${path.relative(process.cwd(), projectPaths.venv)}`, sysPy, ['-m', 'venv', projectPaths.venv], { verbose });
     }
+    // The local venv must include the project's `runtime.python_packages`
+    // because `agent_engines.create()` cloudpickles the AdkApp wrapping
+    // root_agent BEFORE it ships to Vertex. Importing root_agent during that
+    // cloudpickle step requires every dep the agent itself imports — psycopg,
+    // httpx, project-specific libraries, etc. Without this the apply step
+    // explodes with ModuleNotFoundError when the project has any non-trivial
+    // dependency footprint.
+    const extras = opts.extraRequirements ?? [];
+    const allRequirements = [...RUNTIME_REQUIREMENTS, ...extras];
     const stamp = path.join(projectPaths.agentqDir, 'venv.requirements.lock');
-    const desired = RUNTIME_REQUIREMENTS.join('\n');
+    const desired = allRequirements.join('\n');
     const current = (await fs.pathExists(stamp)) ? await fs.readFile(stamp, 'utf-8') : '';
     if (opts.reinstall || current !== desired) {
         await runQuiet('Upgrading pip', py, ['-m', 'pip', 'install', '--upgrade', '--quiet', 'pip'], { verbose });
-        await runQuiet('Installing Python runtime dependencies (one-time per project)', py, ['-m', 'pip', 'install', '--quiet', ...RUNTIME_REQUIREMENTS], { verbose });
+        await runQuiet(extras.length
+            ? `Installing Python runtime dependencies (SDK + ${extras.length} project deps)`
+            : 'Installing Python runtime dependencies (one-time per project)', py, ['-m', 'pip', 'install', '--quiet', ...allRequirements], { verbose });
         await fs.writeFile(stamp, desired, 'utf-8');
     }
     return py;
 }
 export async function runPython(projectPaths, module, args, options = {}) {
     const verbose = Boolean(process.env.AGENTQ_VERBOSE);
-    const py = await ensureVenv(projectPaths, { verbose });
+    const { extraRequirements, ...execaOptions } = options;
+    const py = await ensureVenv(projectPaths, { verbose, extraRequirements });
     const env = {
         ...process.env,
         PYTHONPATH: [paths.pythonRuntime, projectPaths.root, process.env.PYTHONPATH ?? '']
@@ -111,7 +123,7 @@ export async function runPython(projectPaths, module, args, options = {}) {
         stdio: 'inherit',
         cwd: projectPaths.root,
         env,
-        ...options,
+        ...execaOptions,
     });
 }
 //# sourceMappingURL=python.js.map
