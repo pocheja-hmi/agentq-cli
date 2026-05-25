@@ -32,6 +32,7 @@ interface Args {
   'github-org': string;
   'github-repo': string[];
   'state-bucket'?: string;
+  'staging-bucket'?: string;
   tiers: string[];
   'pool-id': string;
   'provider-id': string;
@@ -76,8 +77,9 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
     y.option('gcp-project',  { type: 'string', demandOption: true, describe: 'GCP project ID to bootstrap (e.g. my-dev-gcp).' })
      .option('github-org',   { type: 'string', demandOption: true, describe: 'GitHub org or user that owns the agentq projects.' })
      .option('github-repo',  { type: 'array', string: true, demandOption: true, describe: 'GitHub repo names (without org prefix). Repeatable: --github-repo foo --github-repo bar.' })
-     .option('state-bucket', { type: 'string', describe: 'GCS bucket for state files (default: gs://<gcp-project>-agentq-state).' })
-     .option('tiers',        { type: 'array', string: true, default: ['dev'], describe: 'Which tiers to create deploy + runtime SAs for. Pass --tiers dev for dev GCPs; --tiers staging --tiers prod for prod GCPs.' })
+     .option('state-bucket',   { type: 'string', describe: 'GCS bucket for state files (default: gs://<gcp-project>-agentq-state).' })
+     .option('staging-bucket', { type: 'string', describe: 'GCS bucket for Vertex Agent Engine staging tarballs (default: gs://<gcp-project>-agentq-staging). Vertex requires storage.buckets.get + objects.create on this bucket.' })
+     .option('tiers',          { type: 'array', string: true, default: ['dev'], describe: 'Which tiers to create deploy + runtime SAs for. Pass --tiers dev for dev GCPs; --tiers staging --tiers prod for prod GCPs.' })
      .option('pool-id',      { type: 'string', default: 'agentq-pool' })
      .option('provider-id',  { type: 'string', default: 'github' })
      .option('dry-run',      { type: 'boolean', default: false, describe: 'Print every gcloud command without executing.' }) as Argv<Args>,
@@ -115,6 +117,8 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
     }
     const stateBucket = argv['state-bucket']
       ?? `gs://${project}-agentq-state`;
+    const stagingBucket = argv['staging-bucket']
+      ?? `gs://${project}-agentq-staging`;
     const dryRun = argv['dry-run'];
     const poolId = argv['pool-id'];
     const providerId = argv['provider-id'];
@@ -125,6 +129,7 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
     log.info(`Tiers in this GCP: ${tiers.join(', ')}`);
     log.info(`WIF pool / prov:  ${poolId} / ${providerId}`);
     log.info(`State bucket:     ${stateBucket}`);
+    log.info(`Staging bucket:   ${stagingBucket}`);
     if (dryRun) log.warn('[DRY RUN] No changes will be made.');
 
     // Look up the numeric project number — needed for the WIF provider URI.
@@ -153,23 +158,28 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
 
     // 3. WIF provider.
     //
-    // "Ensure exists, then ensure desired state." We previously only ran
-    // `create-oidc` with ALREADY_EXISTS swallowed as success. That meant
-    // re-runs of setup-cicd (e.g. after correcting a wrong --github-org /
-    // --github-repo) silently left the OLD attribute-condition in place on
-    // the provider — the create step said "already exists" and we moved on.
+    // "Ensure exists, then ensure desired state." `create-oidc` swallows
+    // ALREADY_EXISTS as success — without a follow-up `update-oidc`, a
+    // re-run with new --github-org / --github-repo would silently leave the
+    // OLD attribute-condition in place.
     //
-    // Symptom: WIF auth from CI failed with `unauthorized_client` because
-    // the persisted condition's `assertion.repository == '...'` literal
-    // didn't match the live GitHub OIDC token's actual repository claim.
+    // Symptom of the older shape (OR'd repo list): WIF auth from CI failed
+    // with `unauthorized_client` because the persisted condition's
+    // `assertion.repository == 'org/repo'` literal didn't match what the
+    // live GitHub OIDC token actually claimed — typically because the
+    // condition was written for a previous repo/org combination.
     //
-    // Fix: always follow `create-oidc` with `update-oidc` that writes the
-    // CURRENT condition + mapping. The update is a no-op on the server when
-    // values already match; corrective when they don't.
+    // Fix: condition is now ORG-equality (`assertion.repository_owner`),
+    // not a per-repo OR list. Adding a new repo no longer requires
+    // re-running setup-cicd to update the provider; the IAM binding on
+    // each SA is the per-repo gate instead. Also follow create with an
+    // update so condition + mapping always reflect current desired state.
     log.banner('Step 3/6 — OIDC provider for GitHub');
-    const repoFilter = repos.map((r) => `assertion.repository=='${githubOrg}/${r}'`).join(' || ');
-    const attrCondition = `(${repoFilter}) && (assertion.ref.startsWith('refs/heads/') || assertion.ref.startsWith('refs/pull/'))`;
-    const attrMapping = 'google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.actor=assertion.actor,attribute.environment=assertion.environment';
+    const attrCondition = `assertion.repository_owner == '${githubOrg}' && (assertion.ref.startsWith('refs/heads/') || assertion.ref.startsWith('refs/pull/'))`;
+    // attribute.repository_owner is required for the org-wide principalSet
+    // binding pattern (Pattern C, see bindWifToSA opts). Without it the
+    // principal `attribute.repository_owner/<org>` never matches anything.
+    const attrMapping = 'google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner,attribute.ref=assertion.ref,attribute.actor=assertion.actor,attribute.environment=assertion.environment';
 
     await idempotent(
       dryRun,
@@ -235,32 +245,73 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
       );
 
       // Bind WIF principalSet for this repo + branch to the deploy SA.
+      //
+      // Pattern C (hybrid scope):
+      //   - dev tier: ORG-wide binding. Any new repo under the org can
+      //     deploy to dev without re-running setup-cicd. Lower-stakes
+      //     environment, so the broader scope is fine.
+      //   - staging / prod: PER-REPO binding. Each repo must be explicitly
+      //     allowed to deploy to higher tiers. Adding a new repo requires
+      //     re-running setup-cicd for those projects — by design.
       const branchRef = branchRefForTier(tier);
-      for (const repo of repos) {
+      const scope: WifScope = tier === 'dev' ? 'org' : 'repo';
+      if (scope === 'org') {
+        // One binding covers every repo under the org for this SA.
         await bindWifToSA(
-          project, projectNumber, poolId, githubOrg, repo, branchRef,
-          deployEmail, dryRun,
+          project, projectNumber, poolId, githubOrg, repos[0], branchRef,
+          deployEmail, dryRun, { scope: 'org', refMatch: 'exact' },
         );
+      } else {
+        for (const repo of repos) {
+          await bindWifToSA(
+            project, projectNumber, poolId, githubOrg, repo, branchRef,
+            deployEmail, dryRun, { scope: 'repo', refMatch: 'exact' },
+          );
+        }
       }
     }
 
-    // Plan SA: one per GCP. Bound to PR refs for any of the listed repos.
+    // Plan SA: one per GCP, used for PR runs across every repo in the org.
+    // Org-wide binding (same logic as dev) so new repos can run plans
+    // without re-running setup-cicd.
     const planEmail = `agentq-plan@${project}.iam.gserviceaccount.com`;
     saEmails['plan'] = planEmail;
     await ensureSA(project, 'agentq-plan', 'AgentQ PR-plan (read-only)', dryRun);
     for (const role of PLAN_SA_ROLES) {
       await addProjectIamBinding(project, planEmail, role, dryRun);
     }
-    for (const repo of repos) {
-      await bindWifToSA(
-        project, projectNumber, poolId, githubOrg, repo, 'refs/pull/*',
-        planEmail, dryRun, /* prefixMatch */ true,
-      );
-    }
+    await bindWifToSA(
+      project, projectNumber, poolId, githubOrg, repos[0], 'refs/pull/*',
+      planEmail, dryRun, { scope: 'org', refMatch: 'pr-prefix' },
+    );
 
-    // 5. State bucket.
-    log.banner('Step 5/6 — state bucket');
+    // 5. State + staging buckets.
+    //
+    // Vertex Agent Engine's create() does a `storage.buckets.get` on the
+    // staging bucket BEFORE uploading the tarball, which requires
+    // `storage.buckets.get` — not granted by `roles/storage.objectAdmin`.
+    // Project-level `roles/storage.objectAdmin` is therefore insufficient
+    // for the deploy SA. Granting `roles/storage.admin` scoped to just
+    // these two buckets gives Vertex what it needs without granting
+    // project-wide storage admin.
+    log.banner('Step 5/6 — state + staging buckets');
     await ensureStateBucket(project, stateBucket, dryRun);
+    await ensureStateBucket(project, stagingBucket, dryRun);
+
+    for (const tier of tiers) {
+      const deployEmail = saEmails[`deploy-${tier}`];
+      // Deploy SA: full admin on staging (for Vertex tarball upload + the
+      // pre-upload bucket-metadata read) and on state (for read/write of
+      // state.yaml + versioning operations).
+      await addBucketIamBinding(stagingBucket, deployEmail, 'roles/storage.admin', dryRun);
+      await addBucketIamBinding(stateBucket,   deployEmail, 'roles/storage.admin', dryRun);
+    }
+    // Plan SA: read-only on state so PR-time plans can compare against
+    // the last applied state without modifying it.
+    await addBucketIamBinding(stateBucket, planEmail, 'roles/storage.objectViewer', dryRun);
+    // Plan SA also needs bucket-metadata read on staging for any
+    // `agentq doctor`-style checks that hit Vertex APIs with the plan SA.
+    await addBucketIamBinding(stagingBucket, planEmail, 'roles/storage.legacyBucketReader', dryRun);
 
     // 6. Summary.
     log.banner('Step 6/6 — done — copy these into your project configs');
@@ -281,6 +332,9 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
     log.raw('');
     log.raw(`# State bucket (paste into tiers.<t>.state_bucket OR the workflow's state_bucket input):`);
     log.raw(`state_bucket: ${stateBucket}`);
+    log.raw('');
+    log.raw(`# Staging bucket (paste into tiers.<t>.staging_bucket of agentq.config.yaml):`);
+    log.raw(`staging_bucket: ${stagingBucket}`);
     log.raw('');
     log.success('CI/CD bootstrap complete.');
   },
@@ -392,31 +446,46 @@ async function addServiceAccountIamBinding(
   );
 }
 
+export type WifScope = 'org' | 'repo';
+export type WifRefMatch = 'exact' | 'pr-prefix';
+
+interface WifBindOpts {
+  /** `org` = any repo under the org may impersonate.
+   *  `repo` = only the named repo may impersonate. */
+  scope: WifScope;
+  /** `exact` = condition `request.auth.claims.ref == '<ref>'`.
+   *  `pr-prefix` = condition `startsWith('refs/pull/')`. */
+  refMatch: WifRefMatch;
+}
+
 async function bindWifToSA(
   project: string, projectNumber: string, poolId: string,
   githubOrg: string, githubRepo: string, ref: string,
   saEmail: string, dryRun: boolean,
-  prefixMatch: boolean = false,
+  opts: WifBindOpts = { scope: 'repo', refMatch: 'exact' },
 ): Promise<void> {
-  // Two strategies for the principal binding:
-  //   - Exact branch:  attribute.ref/refs/heads/<branch>
-  //   - Prefix match (PR refs): we encode it via an IAM condition.
-  // For simplicity v1 uses two attribute path styles; the GitOps plan
-  // calls for both. Exact-ref binding is the more restrictive form.
-  const principal = prefixMatch
-    ? `principalSet://iam.googleapis.com/projects/${projectNumber}/locations/global/workloadIdentityPools/${poolId}/attribute.repository/${githubOrg}/${githubRepo}`
+  // The principalSet URL selects WHO may impersonate the SA. The IAM
+  // condition further constrains WHEN — typically gating on the OIDC
+  // token's `ref` claim so only the intended branch can deploy.
+  const principal = opts.scope === 'org'
+    ? `principalSet://iam.googleapis.com/projects/${projectNumber}/locations/global/workloadIdentityPools/${poolId}/attribute.repository_owner/${githubOrg}`
     : `principalSet://iam.googleapis.com/projects/${projectNumber}/locations/global/workloadIdentityPools/${poolId}/attribute.repository/${githubOrg}/${githubRepo}`;
 
-  // Condition narrows the principal further to a specific ref.
-  const condTitle = prefixMatch ? `pr-refs-${githubRepo}` : `${ref.replace(/\W+/g, '-')}-${githubRepo}`;
-  const conditionExpression = prefixMatch
+  // Title must be unique per-binding on the SA. Include scope so org-wide
+  // and per-repo bindings on the same SA don't collide.
+  const scopeTag = opts.scope === 'org' ? githubOrg : githubRepo;
+  const condTitle = opts.refMatch === 'pr-prefix'
+    ? `pr-refs-${scopeTag}`
+    : `${ref.replace(/\W+/g, '-')}-${scopeTag}`;
+  const conditionExpression = opts.refMatch === 'pr-prefix'
     ? `request.auth.claims.ref.startsWith('refs/pull/')`
     : `request.auth.claims.ref == '${ref}'`;
   const condition = `expression=${conditionExpression},title=${condTitle}`;
 
+  const label = opts.scope === 'org' ? `${githubOrg}/*` : `${githubOrg}/${githubRepo}`;
   await idempotent(
     dryRun,
-    `bind WIF principalSet ${githubRepo}@${ref} → ${saEmail}`,
+    `bind WIF principalSet ${label}@${ref} → ${saEmail}`,
     [
       'iam', 'service-accounts', 'add-iam-policy-binding', saEmail,
       `--member=${principal}`,
@@ -428,6 +497,30 @@ async function bindWifToSA(
     [],
     { retryOnTransient: true },
   );
+}
+
+async function addBucketIamBinding(
+  bucket: string, saEmail: string, role: string, dryRun: boolean,
+): Promise<void> {
+  // Bucket-scoped binding (gs://name) — does NOT grant project-wide access.
+  // gcloud is idempotent on add-iam-policy-binding (no-op if binding exists).
+  if (dryRun) {
+    log.info(`[DRY] add ${role} on ${bucket} → ${saEmail}`);
+    return;
+  }
+  try {
+    await execa('gcloud', [
+      'storage', 'buckets', 'add-iam-policy-binding', bucket,
+      `--member=serviceAccount:${saEmail}`,
+      `--role=${role}`,
+      '--quiet',
+    ]);
+    log.info(`bound ${role} on ${bucket} → ${saEmail}`);
+  } catch (err) {
+    throw new AgentqError(
+      `Failed to grant ${role} on ${bucket} to ${saEmail}: ${(err as Error).message}`,
+    );
+  }
 }
 
 function branchRefForTier(tier: string): string {
