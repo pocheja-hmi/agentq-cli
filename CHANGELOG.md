@@ -4,6 +4,28 @@ All notable changes to `agentq-cli` will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-01
+
+### Changed — `config_hash` now folds the package source tree
+- `compute_config_hash` (both TS and Python implementations) now
+  incorporates a sha256 fingerprint of every shippable file under
+  `<project_root>/src/<package>/` plus each `runtime.extra_packages`
+  entry. Previously the hash only saw `agentq.config.yaml`, so
+  source-only edits were invisible to plan/apply and consumers had to
+  bump a manual `AGENT_DEPLOY_NONCE` env var to force a redeploy on
+  every code change.
+- File walk mirrors `deploy.py::_normalize_extra_packages` exactly so
+  the hash covers what actually ships. `__pycache__/`, `*.pyc`, `*.pyo`,
+  `.DS_Store`, and common cache/VCS dirs are excluded.
+- **Migration**: zero-touch. Existing deployments will see one expected
+  hash mismatch on the first `agentq plan` after upgrading (yaml-only
+  hash → yaml+source hash) which triggers a single forced redeploy.
+  Subsequent plans behave as before. Consumers can delete any
+  `AGENT_DEPLOY_NONCE` workaround from their `agentq.config.yaml`.
+- TS↔Python parity is covered by `src/lib/config-hash.test.ts`, which
+  drives both sides off the same temp-directory fixture and asserts
+  equal output before and after a source mutation.
+
 ### Changed — Knowledge-base provider id rename (with full backwards compat)
 - The canonical KB provider id is now `gemini-enterprise-search` (was
   `vertex-ai-search`). All scaffolded YAMLs, state files, and CLI prompts
