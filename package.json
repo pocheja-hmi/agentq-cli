@@ -1,6 +1,6 @@
 {
   "name": "agentq-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Scaffold, deploy, and manage AgentQ Custom Agents (Agent Engine on Gemini Enterprise + ADK).",
   "type": "module",
   "bin": {
