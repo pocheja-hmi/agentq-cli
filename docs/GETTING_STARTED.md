@@ -52,18 +52,19 @@ gcloud auth application-default login
 
 ## 1. Install the CLI
 
-```bash
-# Pin to a tagged release for stability:
-npm install -g github:HorizonMedia/agentq-cli#v0.1.0
+Install from the packed tarball attached to a GitHub Release:
 
-# Or override via env var (e.g. after the repo moves to your org):
-export AGENTQ_CLI_REPO=github:my-org/agentq-cli#v0.1.0
-npm install -g "$AGENTQ_CLI_REPO"
+```bash
+npm install -g https://github.com/HorizonMedia/agentq-cli/releases/download/v0.2.2/agentq-cli-0.2.2.tgz
 
 # Verify
 agentq --version
 agentq --help
 ```
+
+> Don't reach for `npm install -g github:HorizonMedia/agentq-cli#vX` —
+> that path is broken on npm 11.x + fnm + macOS (the global install drops
+> `bin/` and `package.json` silently). The tarball is the reliable path.
 
 ## 2. Scaffold a new project
 
