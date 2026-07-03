@@ -4,6 +4,38 @@ All notable changes to `agentq-cli` will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — WIF impersonation bindings never authorized
+- `setup-cicd` gated every `roles/iam.workloadIdentityUser` binding with an IAM
+  condition on `request.auth.claims.ref`. IAM binding conditions cannot read the
+  federated OIDC token's claims, so the condition was always false and every
+  impersonation was denied (403 `getAccessToken`). `bindWifToSA` now encodes the
+  restriction in the principal itself — `google.subject`
+  (`repo:<org>/<repo>:ref:refs/heads/<branch>` / `:pull_request`) for per-repo
+  scopes, `attribute.ref` for org+branch, `attribute.repository_owner` for the
+  read-only plan SA — with no CEL condition.
+- Scaffolded `agentq-deploy.yml`: route `workload_identity_provider` by
+  environment (each GCP has its own pool; the provider must match the SA's
+  project), and make `tier` / `gcp_project` / `state_bucket` PR-aware via
+  `github.base_ref` (on a PR `github.ref_name` is the merge ref, so they were
+  resolving to the dev tier while the SA resolved to staging/prod → cross-project
+  denials and wrong-tier plans). Two provider placeholders
+  (`REPLACE_ME_dev_gcp_wif_provider` / `REPLACE_ME_prod_gcp_wif_provider`).
+
+### Added
+- `setup-cicd --secret <name>` (repeatable): provision an empty Secret Manager
+  secret in the GCP and grant every runtime SA `roles/secretmanager.secretAccessor`.
+  The value is never passed through the flag.
+- `agentq doctor --tier <t>`: Secret Manager preflight — for each `*_SECRET_REF`
+  in `runtime.env_vars`, resolve `{project}` to the tier's project and verify the
+  secret exists and the runtime SA can read it.
+- `agentq verify-secrets --tier <t>`: CI/pre-deploy preflight that tests the real
+  runtime path by impersonating the runtime SA. Exits non-zero on failure.
+
+### Docs
+- `GETTING_STARTED.md` + `CICD_SETUP.md` template: dual WIF providers, `--secret`
+  provisioning, project-relative `{project}` secret refs, and `doctor --tier`
+  verification.
+
 ## [0.2.2] — 2026-06-01
 
 ### Docs — Tarball install is now the documented consumer path
