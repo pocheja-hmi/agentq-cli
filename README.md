@@ -355,8 +355,11 @@ Run `agentq <command> --help` on any of these for full flag reference.
 | `agentq list`                  | List Reasoning Engines in the configured GCP project.      |
 | `agentq destroy <resource>`    | Delete a deployed Reasoning Engine.                        |
 | `agentq logs <resource>`       | Tail Cloud Logging for a deployed agent.                   |
-| `agentq doctor`                | Diagnose local + cloud setup before deploying.             |
+| `agentq doctor [--tier <t>]`   | Diagnose local + cloud setup before deploying. `--tier` adds a Secret Manager preflight (secret exists + runtime SA can read it). |
 | `agentq kb <subcommand>`       | Manage the project's knowledge base (per provider).        |
+| `agentq setup-cicd`            | One-time per-GCP bootstrap: WIF pool + provider, SAs, IAM, state bucket, and (with `--secret`) Secret Manager shells + runtime-SA access. |
+| `agentq verify-secrets --tier <t>` | Verify each `*_SECRET_REF` is readable by the tier's runtime SA (impersonation). Runs in CI before apply. |
+| `agentq state <subcommand>`    | Inspect/plan/apply/import the tier's deploy state.         |
 
 Global flags (work on every command): `--help`, `--version`, `--verbose`.
 
