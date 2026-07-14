@@ -34,6 +34,7 @@ interface Args {
   'state-bucket'?: string;
   'staging-bucket'?: string;
   tiers: string[];
+  secret: string[];
   'pool-id': string;
   'provider-id': string;
   'dry-run': boolean;
@@ -80,6 +81,7 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
      .option('state-bucket',   { type: 'string', describe: 'GCS bucket for state files (default: gs://<gcp-project>-agentq-state).' })
      .option('staging-bucket', { type: 'string', describe: 'GCS bucket for Vertex Agent Engine staging tarballs (default: gs://<gcp-project>-agentq-staging). Vertex requires storage.buckets.get + objects.create on this bucket.' })
      .option('tiers',          { type: 'array', string: true, default: ['dev'], describe: 'Which tiers to create deploy + runtime SAs for. Pass --tiers dev for dev GCPs; --tiers staging --tiers prod for prod GCPs.' })
+     .option('secret',         { type: 'array', string: true, default: [], describe: 'App secret name(s) to provision in this GCP: creates an (empty) Secret Manager secret and grants every runtime SA roles/secretmanager.secretAccessor. Repeatable. Populate the VALUE separately (never via this flag): printf %s "$VAL" | gcloud secrets versions add <name> --project=<gcp> --data-file=-' })
      .option('pool-id',      { type: 'string', default: 'agentq-pool' })
      .option('provider-id',  { type: 'string', default: 'github' })
      .option('dry-run',      { type: 'boolean', default: false, describe: 'Print every gcloud command without executing.' }) as Argv<Args>,
@@ -88,6 +90,7 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
     const githubOrg = argv['github-org'];
     const repos = argv['github-repo'];
     const tiers = argv.tiers;
+    const secrets = argv.secret;
 
     // Validate --github-repo values: must be bare repo names (no org prefix,
     // no slashes). A slash here would produce a WIF attribute condition like
@@ -313,13 +316,41 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
     // `agentq doctor`-style checks that hit Vertex APIs with the plan SA.
     await addBucketIamBinding(stagingBucket, planEmail, 'roles/storage.legacyBucketReader', dryRun);
 
+    // Application secrets (opt-in via --secret). Provisions the Secret Manager
+    // SHELL only — the value is never passed through this command. Each secret
+    // must exist in EVERY tier's GCP with the runtime SA granted accessor, so
+    // config can use a project-relative ref (projects/{project}/secrets/<n>/…)
+    // that resolves to each tier's own project. This is the fix for the
+    // "works in dev, denied in staging/prod" runtime-secret failure mode.
+    if (secrets.length > 0) {
+      log.banner('Extra — application secrets');
+      const runtimeEmails = tiers.map((t) => saEmails[`runtime-${t}`]);
+      for (const secretName of secrets) {
+        await ensureSecret(project, secretName, dryRun);
+        for (const rt of runtimeEmails) {
+          await addSecretIamBinding(project, secretName, rt, dryRun);
+        }
+      }
+    }
+
     // 6. Summary.
     log.banner('Step 6/6 — done — copy these into your project configs');
     const wifProviderUri = `projects/${projectNumber}/locations/global/workloadIdentityPools/${poolId}/providers/${providerId}`;
 
+    // Which workflow placeholder does THIS GCP's provider fill? A GCP that
+    // hosts staging/prod is the "prod GCP"; a dev-only GCP is the "dev GCP".
+    // When one GCP hosts every tier, both placeholders resolve to it (the
+    // scaffold emits the same token for both, so a single replace covers it).
+    const hostsProdTier = tiers.some((t) => t === 'staging' || t === 'prod');
+    const providerToken = hostsProdTier
+      ? 'REPLACE_ME_prod_gcp_wif_provider'
+      : 'REPLACE_ME_dev_gcp_wif_provider';
+
     log.raw('');
-    log.raw(`# workload_identity_provider input for agentq-actions:`);
+    log.raw(`# workload_identity_provider for this GCP (${project}):`);
     log.raw(`#   ${wifProviderUri}`);
+    log.raw(`# In .github/workflows/agentq-deploy.yml, replace this token with the URI above:`);
+    log.raw(`#   ${providerToken}`);
     log.raw('');
     log.raw(`# Service accounts (paste into tiers.<t> blocks of agentq.config.yaml):`);
     for (const tier of tiers) {
@@ -335,6 +366,18 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
     log.raw('');
     log.raw(`# Staging bucket (paste into tiers.<t>.staging_bucket of agentq.config.yaml):`);
     log.raw(`staging_bucket: ${stagingBucket}`);
+    if (secrets.length > 0) {
+      log.raw('');
+      log.raw(`# Secrets provisioned in ${project} (shells only — now add the VALUE):`);
+      for (const s of secrets) {
+        log.raw(`#   printf %s "$VALUE" | gcloud secrets versions add ${s} --project=${project} --data-file=-`);
+      }
+      log.raw(`# Reference them project-relatively in runtime.env_vars so every tier reads its own project:`);
+      for (const s of secrets) {
+        log.raw(`#   <KEY>_SECRET_REF: projects/{project}/secrets/${s}/versions/latest`);
+      }
+      log.raw(`# Verify per tier: agentq doctor --tier <t>`);
+    }
     log.raw('');
     log.success('CI/CD bootstrap complete.');
   },
@@ -453,9 +496,53 @@ interface WifBindOpts {
   /** `org` = any repo under the org may impersonate.
    *  `repo` = only the named repo may impersonate. */
   scope: WifScope;
-  /** `exact` = condition `request.auth.claims.ref == '<ref>'`.
-   *  `pr-prefix` = condition `startsWith('refs/pull/')`. */
+  /** `exact` = only the given branch ref (`<ref>`) may impersonate.
+   *  `pr-prefix` = only pull-request events may impersonate. */
   refMatch: WifRefMatch;
+}
+
+/**
+ * Build the WIF member string that restricts WHO may impersonate the SA.
+ *
+ * WHY NOT AN IAM CONDITION: earlier versions gated the branch/PR via a CEL
+ * condition on the binding (`request.auth.claims.ref == ...`). That does not
+ * work — IAM policy-binding conditions on `roles/iam.workloadIdentityUser`
+ * cannot read the federated token's claims, so the condition is always false
+ * and every impersonation is denied (403 getAccessToken). The restriction
+ * MUST be encoded in the principal/principalSet itself, using attributes that
+ * the provider maps (google.subject, attribute.ref, attribute.repository_owner).
+ *
+ * GitHub's default `sub` (mapped to google.subject) encodes repo + trigger:
+ *   push:         repo:<org>/<repo>:ref:refs/heads/<branch>
+ *   pull_request: repo:<org>/<repo>:pull_request
+ * so a single-identity `principal://.../subject/<sub>` pins repo AND branch/PR
+ * with no condition. Org-wide scopes fall back to a principalSet on a mapped
+ * attribute (attribute.ref pins the branch; attribute.repository_owner pins
+ * only the org — acceptable for the read-only plan SA).
+ */
+function wifMember(
+  projectNumber: string, poolId: string,
+  githubOrg: string, githubRepo: string, ref: string,
+  opts: WifBindOpts,
+): string {
+  const res = `iam.googleapis.com/projects/${projectNumber}/locations/global/workloadIdentityPools/${poolId}`;
+  if (opts.scope === 'repo') {
+    // Pin this exact repo + trigger via google.subject.
+    const sub = opts.refMatch === 'pr-prefix'
+      ? `repo:${githubOrg}/${githubRepo}:pull_request`
+      : `repo:${githubOrg}/${githubRepo}:ref:${ref}`;
+    return `principal://${res}/subject/${sub}`;
+  }
+  // Org-wide.
+  if (opts.refMatch === 'exact') {
+    // Any repo in the org, but only on the given branch ref.
+    return `principalSet://${res}/attribute.ref/${ref}`;
+  }
+  // Org-wide + pull requests: no principalSet can express "PR-only across the
+  // org" (the PR subject is per-repo). The provider's attribute-condition
+  // already limits tokens to this org on refs/heads|refs/pull, and the only
+  // caller (the plan SA) is read-only, so scope to the org.
+  return `principalSet://${res}/attribute.repository_owner/${githubOrg}`;
 }
 
 async function bindWifToSA(
@@ -464,33 +551,20 @@ async function bindWifToSA(
   saEmail: string, dryRun: boolean,
   opts: WifBindOpts = { scope: 'repo', refMatch: 'exact' },
 ): Promise<void> {
-  // The principalSet URL selects WHO may impersonate the SA. The IAM
-  // condition further constrains WHEN — typically gating on the OIDC
-  // token's `ref` claim so only the intended branch can deploy.
-  const principal = opts.scope === 'org'
-    ? `principalSet://iam.googleapis.com/projects/${projectNumber}/locations/global/workloadIdentityPools/${poolId}/attribute.repository_owner/${githubOrg}`
-    : `principalSet://iam.googleapis.com/projects/${projectNumber}/locations/global/workloadIdentityPools/${poolId}/attribute.repository/${githubOrg}/${githubRepo}`;
+  const principal = wifMember(projectNumber, poolId, githubOrg, githubRepo, ref, opts);
 
-  // Title must be unique per-binding on the SA. Include scope so org-wide
-  // and per-repo bindings on the same SA don't collide.
-  const scopeTag = opts.scope === 'org' ? githubOrg : githubRepo;
-  const condTitle = opts.refMatch === 'pr-prefix'
-    ? `pr-refs-${scopeTag}`
-    : `${ref.replace(/\W+/g, '-')}-${scopeTag}`;
-  const conditionExpression = opts.refMatch === 'pr-prefix'
-    ? `request.auth.claims.ref.startsWith('refs/pull/')`
-    : `request.auth.claims.ref == '${ref}'`;
-  const condition = `expression=${conditionExpression},title=${condTitle}`;
-
-  const label = opts.scope === 'org' ? `${githubOrg}/*` : `${githubOrg}/${githubRepo}`;
+  const scopeLabel = opts.scope === 'org' ? `${githubOrg}/*` : `${githubOrg}/${githubRepo}`;
+  const refLabel = opts.refMatch === 'pr-prefix' ? 'PRs' : ref;
   await idempotent(
     dryRun,
-    `bind WIF principalSet ${label}@${ref} → ${saEmail}`,
+    `bind WIF ${scopeLabel}@${refLabel} → ${saEmail}`,
     [
       'iam', 'service-accounts', 'add-iam-policy-binding', saEmail,
       `--member=${principal}`,
       `--role=roles/iam.workloadIdentityUser`,
-      `--condition=${condition}`,
+      // No IAM condition — restriction is encoded in the principal (see
+      // wifMember). Conditions on workloadIdentityUser can't see token claims.
+      `--condition=None`,
       `--project=${project}`,
       '--no-user-output-enabled',
     ],
@@ -521,6 +595,37 @@ async function addBucketIamBinding(
       `Failed to grant ${role} on ${bucket} to ${saEmail}: ${(err as Error).message}`,
     );
   }
+}
+
+async function ensureSecret(project: string, name: string, dryRun: boolean): Promise<void> {
+  await idempotent(
+    dryRun,
+    `create secret ${name}`,
+    [
+      'secrets', 'create', name,
+      '--replication-policy=automatic',
+      `--project=${project}`,
+    ],
+    ['ALREADY_EXISTS', 'already exists'],
+  );
+}
+
+async function addSecretIamBinding(
+  project: string, secretName: string, member: string, dryRun: boolean,
+): Promise<void> {
+  await idempotent(
+    dryRun,
+    `grant secretAccessor on ${secretName} → ${member}`,
+    [
+      'secrets', 'add-iam-policy-binding', secretName,
+      `--member=serviceAccount:${member}`,
+      '--role=roles/secretmanager.secretAccessor',
+      `--project=${project}`,
+      '--no-user-output-enabled',
+    ],
+    [],
+    { retryOnTransient: true },
+  );
 }
 
 function branchRefForTier(tier: string): string {
