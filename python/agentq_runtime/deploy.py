@@ -195,6 +195,11 @@ def _common_kwargs(cfg, target=None) -> dict:
         # avoids the wrong tier's datastore leaking in from cfg.runtime.env_vars
         # (which was populated from the default tier or legacy block at load).
         env_vars["KB_DATASTORE"] = target.datastore_resource
+    if target is not None and target.env_vars:
+        # Per-tier env var overrides win over the global runtime.env_vars —
+        # e.g. a tier in a different GCP project pointing at its own Cloud SQL
+        # instance, DB user, and Secret Manager refs.
+        env_vars.update(target.env_vars)
 
     # Vertex rejects env vars with empty-string values
     # ("reasoning_engine.spec.deployment_spec.env[N].value: Required field

@@ -13,6 +13,7 @@ import { doctorCommand } from './commands/doctor.js';
 import { kbCommand } from './commands/kb.js';
 import { stateCommand } from './commands/state.js';
 import { setupCicdCommand } from './commands/setup-cicd.js';
+import { verifySecretsCommand } from './commands/verify-secrets.js';
 import { setVerbose, log } from './lib/logger.js';
 import { AgentqError } from './lib/errors.js';
 import { readPackageVersion } from './lib/paths.js';
@@ -36,6 +37,7 @@ async function main() {
         .command(kbCommand)
         .command(stateCommand)
         .command(setupCicdCommand)
+        .command(verifySecretsCommand)
         .demandCommand(1, 'Specify a command. Run `agentq --help` for the list.')
         .strict()
         .recommendCommands()

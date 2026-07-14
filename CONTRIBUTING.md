@@ -75,20 +75,27 @@ Before running it:
 
 ## How consumers install
 
+Use the packed tarball attached to each GitHub Release:
+
 ```bash
-# Floating major (latest v1.x.y)
-npm install -g github:HorizonMedia/agentq-cli#v1
-
-# Pinned exact version
-npm install -g github:HorizonMedia/agentq-cli#v0.2.0
-
-# Override the source repo for forks / mirrors
-export AGENTQ_CLI_REPO=github:my-fork/agentq-cli#v1
-npm install -g "$AGENTQ_CLI_REPO"
+npm install -g https://github.com/HorizonMedia/agentq-cli/releases/download/v0.2.2/agentq-cli-0.2.2.tgz
 ```
 
-The `prepare` hook in `package.json` runs `npm run build` during install so
-consumers always get a freshly compiled CLI for the ref they pinned.
+Every release script run produces `agentq-cli-<version>.tgz` via `npm pack`
+and uploads it as a release asset. Before publishing, attach it with:
+
+```bash
+cd /tmp && rm -rf cli-pack
+git clone --depth 1 --branch <vX.Y.Z> https://github.com/HorizonMedia/agentq-cli.git cli-pack
+cd cli-pack && npm pack
+gh release upload <vX.Y.Z> agentq-cli-<X.Y.Z>.tgz --repo HorizonMedia/agentq-cli
+```
+
+> **Do not document `npm install -g github:HorizonMedia/agentq-cli#vX`.**
+> That path is unreliable on npm 11.x + fnm + macOS — the global install
+> silently drops `bin/`, `package.json`, README, and CHANGELOG, leaving
+> `agentq` broken. CI side-steps this by cloning + `npm install -g .` from
+> the local checkout (see `agentq-actions/actions/setup/action.yml`).
 
 ## Cross-repo contract: `plan.schema.json`
 

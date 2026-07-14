@@ -13,25 +13,27 @@ through hooks when needed.
 
 ## Install
 
-The CLI is distributed as an npm package installed directly from the Git
-repository (no public registry). The repository URL is **not** hardcoded —
-override it any time with `AGENTQ_CLI_REPO`:
+The CLI ships as a pre-packed tarball attached to every GitHub Release.
+Install it with `npm install -g <tarball-url>`:
 
 ```bash
-# Default upstream (current location)
-npm install -g github:HorizonMedia/agentq-cli
-
-# Pin to a tagged release
-npm install -g github:HorizonMedia/agentq-cli#v0.1.0
-
-# Override (e.g. after migration to an org repo)
-export AGENTQ_CLI_REPO=github:my-org/agentq-cli#v0.1.0
-npm install -g "$AGENTQ_CLI_REPO"
+# Recommended — pinned release asset
+npm install -g https://github.com/HorizonMedia/agentq-cli/releases/download/v0.2.2/agentq-cli-0.2.2.tgz
 
 # Verify
 agentq --version
 agentq --help
 ```
+
+> **Why the tarball and not `npm install -g github:HorizonMedia/agentq-cli#v0`?**
+> The `npm install -g <git-url>` path is unreliable on certain
+> npm 11.x + fnm + macOS combinations — the global install silently
+> drops `bin/agentq.js` and `package.json`, leaving the shim symlink
+> pointing at a non-existent file. The packed tarball avoids npm's
+> git-dep code path entirely and installs cleanly everywhere we've
+> tested. CI (`agentq-actions`) clones the repo and runs
+> `npm install -g .` from the local checkout, which is a third reliable
+> path; do not switch CI to the git-URL form.
 
 > When the repository moves to its long-term Org home, update one variable —
 > `AGENTQ_CLI_REPO` — across teams. Nothing else changes.
@@ -353,8 +355,11 @@ Run `agentq <command> --help` on any of these for full flag reference.
 | `agentq list`                  | List Reasoning Engines in the configured GCP project.      |
 | `agentq destroy <resource>`    | Delete a deployed Reasoning Engine.                        |
 | `agentq logs <resource>`       | Tail Cloud Logging for a deployed agent.                   |
-| `agentq doctor`                | Diagnose local + cloud setup before deploying.             |
+| `agentq doctor [--tier <t>]`   | Diagnose local + cloud setup before deploying. `--tier` adds a Secret Manager preflight (secret exists + runtime SA can read it). |
 | `agentq kb <subcommand>`       | Manage the project's knowledge base (per provider).        |
+| `agentq setup-cicd`            | One-time per-GCP bootstrap: WIF pool + provider, SAs, IAM, state bucket, and (with `--secret`) Secret Manager shells + runtime-SA access. |
+| `agentq verify-secrets --tier <t>` | Verify each `*_SECRET_REF` is readable by the tier's runtime SA (impersonation). Runs in CI before apply. |
+| `agentq state <subcommand>`    | Inspect/plan/apply/import the tier's deploy state.         |
 
 Global flags (work on every command): `--help`, `--version`, `--verbose`.
 
@@ -506,10 +511,10 @@ Because every project shares the same config shape:
 
 ## Versioning
 
-The CLI is versioned with semver. Install a specific tag:
+The CLI is versioned with semver. Install a specific release:
 
 ```bash
-npm install -g github:HorizonMedia/agentq-cli#v0.1.0
+npm install -g https://github.com/HorizonMedia/agentq-cli/releases/download/v0.2.2/agentq-cli-0.2.2.tgz
 ```
 
 When the upstream repository changes location, update once:

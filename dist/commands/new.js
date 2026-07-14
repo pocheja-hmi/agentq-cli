@@ -140,6 +140,15 @@ export const newCommand = {
                 prod_gcp: prodGcp,
                 dev_state_bucket: `gs://${devGcp}-agentq-state`,
                 prod_state_bucket: `gs://${prodGcp}-agentq-state`,
+                // WIF provider resource names carry the numeric project number, which
+                // isn't known at scaffold time — setup-cicd prints it per GCP. The
+                // workflow routes between these two by env (see agentq-deploy.yml).
+                // When dev and prod share one GCP there's a single pool, so both
+                // slots use the same placeholder → the user replaces it once.
+                dev_wif_provider: 'REPLACE_ME_dev_gcp_wif_provider',
+                prod_wif_provider: devGcp === prodGcp
+                    ? 'REPLACE_ME_dev_gcp_wif_provider'
+                    : 'REPLACE_ME_prod_gcp_wif_provider',
                 actions_ref: `${argv['actions-repo']}/.github/workflows/deploy.yml@${argv['actions-ref']}`,
             } : null,
             flags: {

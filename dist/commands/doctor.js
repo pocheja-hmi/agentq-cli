@@ -23,7 +23,8 @@ const REQUIRED_APIS = [
 export const doctorCommand = {
     command: 'doctor',
     describe: 'Diagnose local + cloud setup before deploying.',
-    builder: (y) => y.option('project-dir', { type: 'string' }),
+    builder: (y) => y.option('project-dir', { type: 'string' })
+        .option('tier', { type: 'string', describe: 'Verify a specific tier (dev|staging|prod): its project, runtime SA, and secret access.' }),
     handler: async (argv) => {
         log.banner('agentq doctor');
         const checks = [];
@@ -99,6 +100,53 @@ export const doctorCommand = {
                 status: venvOk ? 'ok' : 'warn',
                 detail: venvOk ? undefined : 'will be created on first deploy',
             });
+            // Secret Manager preflight — catches the "works in dev, denied in
+            // staging/prod" class of failures BEFORE the engine ships broken. For
+            // every *_SECRET_REF in env_vars, resolve {project} to the target tier's
+            // project, then verify the secret exists and the runtime SA can read it.
+            const envVars = (cfg.runtime.env_vars ?? {});
+            const secretRefs = Object.entries(envVars).filter(([k]) => k.endsWith('_SECRET_REF'));
+            if (secretRefs.length > 0) {
+                const tierName = argv.tier;
+                const tierCfg = tierName && cfg.tiers ? cfg.tiers[tierName] : undefined;
+                if (tierName && !tierCfg) {
+                    checks.push({ name: `tier: ${tierName}`, status: 'fail', detail: 'not defined in tiers.* — check the spelling' });
+                }
+                const secretProject = tierCfg?.gcp_project ?? cfg.deployment.gcp_project;
+                const runtimeSa = tierCfg?.runtime_service_account ?? null;
+                for (const [key, rawRef] of secretRefs) {
+                    const ref = rawRef.split('{project}').join(secretProject);
+                    const secretName = ref.match(/secrets\/([^/]+)/)?.[1] ?? ref;
+                    const where = `${secretName} (${secretProject})`;
+                    let exists = true;
+                    try {
+                        await gcloud(['secrets', 'describe', secretName, `--project=${secretProject}`]);
+                    }
+                    catch {
+                        exists = false;
+                    }
+                    if (!exists) {
+                        checks.push({ name: `secret ${key}`, status: 'fail', detail: `${where} not found — create it and add the value` });
+                        continue;
+                    }
+                    if (!runtimeSa) {
+                        checks.push({ name: `secret ${key}`, status: 'warn', detail: `${where} exists; pass --tier <t> to verify the runtime SA can read it` });
+                        continue;
+                    }
+                    let hasAccess = false;
+                    try {
+                        const r = await gcloud(['secrets', 'get-iam-policy', secretName, `--project=${secretProject}`, '--format=json']);
+                        const policy = JSON.parse(r.stdout || '{}');
+                        hasAccess = (policy.bindings ?? []).some((b) => b.role === 'roles/secretmanager.secretAccessor' && (b.members ?? []).includes(`serviceAccount:${runtimeSa}`));
+                    }
+                    catch {
+                        hasAccess = false;
+                    }
+                    checks.push(hasAccess
+                        ? { name: `secret ${key}`, status: 'ok', detail: `${where} readable by ${runtimeSa}` }
+                        : { name: `secret ${key}`, status: 'fail', detail: `grant roles/secretmanager.secretAccessor on ${where} to ${runtimeSa}` });
+                }
+            }
         }
         catch (err) {
             checks.push({ name: 'agentq.config.yaml', status: 'fail', detail: err.message });

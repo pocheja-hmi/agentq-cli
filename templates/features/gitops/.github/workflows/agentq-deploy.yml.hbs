@@ -35,13 +35,26 @@ jobs:
     uses: {{cicd.actions_ref}}
     with:
       project_name: {{project.name}}
-      tier: ${{ github.ref_name == '{{cicd.branch_prod}}' && 'prod' || github.ref_name == '{{cicd.branch_staging}}' && 'staging' || 'dev' }}
-      gcp_project: ${{ (github.ref_name == '{{cicd.branch_prod}}' || github.ref_name == '{{cicd.branch_staging}}') && '{{cicd.prod_gcp}}' || '{{cicd.dev_gcp}}' }}
-      state_bucket: ${{ (github.ref_name == '{{cicd.branch_prod}}' || github.ref_name == '{{cicd.branch_staging}}') && '{{cicd.prod_state_bucket}}' || '{{cicd.dev_state_bucket}}' }}
+      # tier / gcp_project / state_bucket must resolve to the SAME environment
+      # as deployer_service_account. On a pull_request, github.ref_name is the
+      # merge ref (e.g. "42/merge"), never a real branch — so these MUST key
+      # off github.base_ref for PRs (the tier being merged INTO), exactly like
+      # deployer_service_account. Otherwise a PR into staging/prod plans the
+      # dev tier with the staging/prod SA and hits a cross-project denial.
+      tier: ${{ github.event_name == 'pull_request' && (github.base_ref == '{{cicd.branch_prod}}' && 'prod' || github.base_ref == '{{cicd.branch_staging}}' && 'staging' || 'dev') || (github.ref_name == '{{cicd.branch_prod}}' && 'prod' || github.ref_name == '{{cicd.branch_staging}}' && 'staging' || 'dev') }}
+      gcp_project: ${{ github.event_name == 'pull_request' && ((github.base_ref == '{{cicd.branch_prod}}' || github.base_ref == '{{cicd.branch_staging}}') && '{{cicd.prod_gcp}}' || '{{cicd.dev_gcp}}') || ((github.ref_name == '{{cicd.branch_prod}}' || github.ref_name == '{{cicd.branch_staging}}') && '{{cicd.prod_gcp}}' || '{{cicd.dev_gcp}}') }}
+      state_bucket: ${{ github.event_name == 'pull_request' && ((github.base_ref == '{{cicd.branch_prod}}' || github.base_ref == '{{cicd.branch_staging}}') && '{{cicd.prod_state_bucket}}' || '{{cicd.dev_state_bucket}}') || ((github.ref_name == '{{cicd.branch_prod}}' || github.ref_name == '{{cicd.branch_staging}}') && '{{cicd.prod_state_bucket}}' || '{{cicd.dev_state_bucket}}') }}
       deployer_service_account: ${{ github.event_name == 'pull_request' && format('agentq-plan@{0}.iam.gserviceaccount.com', (github.base_ref == '{{cicd.branch_prod}}' || github.base_ref == '{{cicd.branch_staging}}') && '{{cicd.prod_gcp}}' || '{{cicd.dev_gcp}}') || (github.ref_name == '{{cicd.branch_prod}}' && 'agentq-deploy-prod@{{cicd.prod_gcp}}.iam.gserviceaccount.com' || (github.ref_name == '{{cicd.branch_staging}}' && 'agentq-deploy-staging@{{cicd.prod_gcp}}.iam.gserviceaccount.com' || 'agentq-deploy-dev@{{cicd.dev_gcp}}.iam.gserviceaccount.com')) }}
-      # workload_identity_provider — print this with `agentq setup-cicd` and
-      # paste the full resource name here. Format:
+      # workload_identity_provider — MUST live in the same GCP project as the
+      # deployer_service_account selected above: SA impersonation is authorized
+      # per-project, and `agentq setup-cicd` creates a separate agentq-pool in
+      # each GCP it bootstraps. So this is routed by env exactly like
+      # deployer_service_account (PR → base_ref, push/dispatch → ref_name).
+      # `agentq setup-cicd` prints the provider URI for each GCP; paste the
+      # dev-GCP value over REPLACE_ME_dev_gcp_wif_provider and the prod-GCP
+      # value over REPLACE_ME_prod_gcp_wif_provider (when both tiers share one
+      # GCP, they're the same token — replace it once). Format:
       #   projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/agentq-pool/providers/github
-      workload_identity_provider: "REPLACE_ME_with_value_printed_by_agentq_setup-cicd"
+      workload_identity_provider: ${{ github.event_name == 'pull_request' && ((github.base_ref == '{{cicd.branch_prod}}' || github.base_ref == '{{cicd.branch_staging}}') && '{{cicd.prod_wif_provider}}' || '{{cicd.dev_wif_provider}}') || ((github.ref_name == '{{cicd.branch_prod}}' || github.ref_name == '{{cicd.branch_staging}}') && '{{cicd.prod_wif_provider}}' || '{{cicd.dev_wif_provider}}') }}
       cli_version: v0.1.0
       dry_run: ${{ inputs.dry_run == true }}

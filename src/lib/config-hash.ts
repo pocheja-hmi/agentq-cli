@@ -24,6 +24,9 @@
 // behavior depends on which side computed the hash — a class of bug we want
 // to prevent entirely.
 import { createHash } from 'node:crypto';
+import type { Dirent } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { basename, isAbsolute, join, posix, relative } from 'node:path';
 import type { AgentqConfig } from './config.js';
 
 const AUTO_INJECTED_ENV_KEYS = new Set([
@@ -31,6 +34,104 @@ const AUTO_INJECTED_ENV_KEYS = new Set([
   'GOOGLE_GENAI_USE_VERTEXAI',
   'KB_DATASTORE',
 ]);
+
+const SRC_EXCLUDED_DIRS = new Set([
+  '__pycache__', '.git', '.mypy_cache', '.pytest_cache', '.ruff_cache',
+  '.tox', '.venv', 'node_modules',
+]);
+const SRC_EXCLUDED_SUFFIXES = ['.pyc', '.pyo'];
+const SRC_EXCLUDED_FILENAMES = new Set(['.DS_Store']);
+
+function isDir(p: string): boolean {
+  try { return statSync(p).isDirectory(); } catch { return false; }
+}
+
+/** Walk a package directory and return sorted (relpath, sha256) pairs.
+ *  `relpath` is rooted at the package's parent so it begins with `<pkg>/...`. */
+function iterPackageFiles(root: string): Array<[string, string]> {
+  if (!isDir(root)) return [];
+  const base = join(root, '..');
+  const out: Array<[string, string]> = [];
+  const stack: string[] = [root];
+  while (stack.length) {
+    const dir = stack.pop()!;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }) as unknown as Dirent[];
+    } catch { continue; }
+    // Sort for determinism (the hash doesn't care, but iteration order does
+    // matter for memory locality on huge trees).
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (SRC_EXCLUDED_DIRS.has(e.name)) continue;
+        stack.push(join(dir, e.name));
+        continue;
+      }
+      if (!e.isFile()) continue;
+      if (SRC_EXCLUDED_FILENAMES.has(e.name)) continue;
+      if (SRC_EXCLUDED_SUFFIXES.some((s) => e.name.endsWith(s))) continue;
+      const full = join(dir, e.name);
+      let data: Buffer;
+      try { data = readFileSync(full); } catch { continue; }
+      const sha = createHash('sha256').update(data).digest('hex');
+      // posix-style relpath matches the Python side (`.as_posix()`).
+      const rel = relative(base, full).split(/[\\/]/g).join(posix.sep);
+      out.push([rel, sha]);
+    }
+  }
+  return out;
+}
+
+/** Resolve the set of package roots that will ship in the deploy tarball.
+ *  Mirrors Python's _source_roots / deploy.py::_normalize_extra_packages. */
+function sourceRoots(cfg: AgentqConfig, projectRoot: string): string[] {
+  const srcDir = join(projectRoot, 'src');
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  const mainPkg = (cfg.project.package ?? '').trim();
+  if (mainPkg) {
+    const mainRoot = join(srcDir, mainPkg);
+    if (isDir(mainRoot)) {
+      roots.push(mainRoot);
+      seen.add(mainPkg);
+    }
+  }
+  for (const epRaw of cfg.runtime.extra_packages ?? []) {
+    let s = (epRaw ?? '').trim();
+    if (!s) continue;
+    let p: string;
+    let key: string;
+    if (isAbsolute(s)) {
+      p = s;
+      key = p;
+    } else {
+      if (s.startsWith('./')) s = s.slice(2);
+      if (s.startsWith('src/')) s = s.slice(4);
+      p = join(srcDir, s);
+      key = basename(s.replace(/\/+$/, '')) || s;
+    }
+    if (seen.has(key)) continue;
+    if (isDir(p)) {
+      roots.push(p);
+      seen.add(key);
+    }
+  }
+  return roots;
+}
+
+function sourceTreeHash(cfg: AgentqConfig, projectRoot: string | null): string {
+  if (!projectRoot) return '';
+  const entries: Array<[string, string]> = [];
+  for (const r of sourceRoots(cfg, projectRoot)) {
+    for (const e of iterPackageFiles(r)) entries.push(e);
+  }
+  if (entries.length === 0) return '';
+  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const payload = entries.map(([p, s]) => ({ path: p, sha256: s }));
+  const serial = canonical(payload);
+  return 'sha256:' + createHash('sha256').update(serial, 'utf-8').digest('hex');
+}
 
 /** Stable JSON serialization: keys sorted, nulls excluded, no whitespace. */
 function canonical(value: unknown): string {
@@ -60,7 +161,11 @@ function canonical(value: unknown): string {
  * the hash. For legacy projects, `tier` is ignored and the legacy deployment
  * block is used.
  */
-function deployedView(cfg: AgentqConfig, tier: string | null): Record<string, unknown> {
+function deployedView(
+  cfg: AgentqConfig,
+  tier: string | null,
+  projectRoot: string | null,
+): Record<string, unknown> {
   const envClean: Record<string, string> = {};
   for (const [k, v] of Object.entries(cfg.runtime.env_vars ?? {})) {
     if (AUTO_INJECTED_ENV_KEYS.has(k)) continue;
@@ -90,6 +195,10 @@ function deployedView(cfg: AgentqConfig, tier: string | null): Record<string, un
       package:      cfg.project.package,
       display_name: cfg.project.display_name,
     },
+    // Folds the package source tree into the drift token so a code-only
+    // change (no YAML edit) still produces a fresh hash and triggers a
+    // redeploy. Empty string when no projectRoot is supplied.
+    source_tree_hash: sourceTreeHash(cfg, projectRoot),
     agent: {
       pattern:      cfg.agent.pattern,
       entry_module: cfg.agent.entry_module,
@@ -118,9 +227,17 @@ function deployedView(cfg: AgentqConfig, tier: string | null): Record<string, un
   };
 }
 
-/** Compute the sha256 drift token. Format: `sha256:<64-hex>`. */
-export function computeConfigHash(cfg: AgentqConfig, tier: string | null): string {
-  const view = deployedView(cfg, tier);
+/** Compute the sha256 drift token. Format: `sha256:<64-hex>`.
+ *
+ *  `projectRoot` lets the hash incorporate a fingerprint of the package
+ *  source tree under `<projectRoot>/src/<package>/`. Pass `null` to skip
+ *  the source-tree fold (fixtures / tests with no real layout on disk). */
+export function computeConfigHash(
+  cfg: AgentqConfig,
+  tier: string | null,
+  projectRoot: string | null = null,
+): string {
+  const view = deployedView(cfg, tier, projectRoot);
   const serial = canonical(view);
   const digest = createHash('sha256').update(serial, 'utf-8').digest('hex');
   return `sha256:${digest}`;

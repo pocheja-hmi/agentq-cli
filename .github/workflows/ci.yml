@@ -3,10 +3,11 @@ name: ci
 # Runs on every push to main and every PR. Three checks:
 #   1. TypeScript compiles cleanly (lint).
 #   2. The committed dist/ matches what a fresh build produces.
-#      This is the load-bearing check: consumers install via
-#      `npm install -g github:HorizonMedia/agentq-cli#vX` which does NOT
-#      run `tsc`. If a contributor edits src/ without rebuilding, the
-#      published CLI would silently keep the old behavior. CI catches it.
+#      This is the load-bearing check: consumers install via the packed
+#      tarball attached to each release, which contains whatever dist/
+#      was at the tag — it does NOT run `tsc`. If a contributor edits
+#      src/ without rebuilding, the published CLI would silently keep
+#      the old behavior. CI catches it.
 #   3. Smoke-test `agentq --help` (cheap proof the entry point loads).
 #
 # IMPORTANT: `dist/` is COMMITTED in this repo on purpose — see .gitignore.

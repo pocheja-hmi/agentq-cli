@@ -32,7 +32,8 @@ This creates:
 - State bucket `{{cicd.dev_state_bucket}}`
 - IAM bindings (deploy SA can impersonate runtime SA, etc.)
 
-The command prints the `workload_identity_provider` URI. **Copy it.**
+The command prints the `workload_identity_provider` URI **for the dev GCP** and
+the exact placeholder to replace (`REPLACE_ME_dev_gcp_wif_provider`). **Copy it.**
 
 ### 2. Bootstrap the prod GCP
 {{#flags.gitops_enabled}}
@@ -48,13 +49,68 @@ agentq setup-cicd \
 {{/cicd.prod_gcp}}
 
 Creates the same shape on the prod GCP, with one deploy SA per tier
-(staging + prod) so each has its own IAM scope.
+(staging + prod) so each has its own IAM scope. It prints a **second**
+`workload_identity_provider` URI — the one for the prod GCP — plus its
+placeholder (`REPLACE_ME_prod_gcp_wif_provider`).
 
-### 3. Paste the WIF URI into `.github/workflows/agentq-deploy.yml`
+### 3. Paste **both** WIF URIs into `.github/workflows/agentq-deploy.yml`
 
-Replace `REPLACE_ME_with_value_printed_by_agentq_setup-cicd` with the full
-provider resource name. Use the prod GCP's value (the workflow handles routing
-to the right GCP per tier automatically).
+The dev and prod GCPs each have their own `agentq-pool`, and SA impersonation
+is authorized per-project. The workflow therefore routes `workload_identity_provider`
+by environment (just like `deployer_service_account`), so you must fill **both**
+slots:
+
+- Replace `REPLACE_ME_dev_gcp_wif_provider` with the URI from step 1 (dev GCP).
+- Replace `REPLACE_ME_prod_gcp_wif_provider` with the URI from step 2 (prod GCP).
+
+> If dev and prod share a single GCP, both slots use the same placeholder token
+> — replace it once with that GCP's URI.
+
+### 3b. Provision application secrets (once per GCP)
+
+Runtime secrets (e.g. API keys, OAuth client secrets) are **not** deployed as
+plaintext `env_vars` — those land in `state.yaml`. Instead each secret lives in
+Secret Manager and is referenced by a `<KEY>_SECRET_REF` env var. Because
+`runtime.env_vars` is global (not per-tier), use a **project-relative** ref so
+each tier reads its OWN project's copy:
+
+```yaml
+# in agentq.config.yaml → runtime.env_vars
+MY_API_KEY_SECRET_REF: projects/{project}/secrets/my-api-key/versions/latest
+```
+
+`{project}` is substituted at runtime with the deployed tier's project. That
+means the secret must exist — with the runtime SA granted access — in **every**
+GCP the agent deploys to. Provision the shell + IAM with `setup-cicd --secret`
+(re-run per GCP; it's idempotent), then add the value:
+
+```bash
+# dev GCP
+agentq setup-cicd --gcp-project {{cicd.dev_gcp}} --github-org <ORG> \
+  --github-repo <THIS_REPO_NAME> --tiers dev --secret my-api-key
+# prod GCP
+agentq setup-cicd --gcp-project {{cicd.prod_gcp}} --github-org <ORG> \
+  --github-repo <THIS_REPO_NAME> --tiers staging --tiers prod --secret my-api-key
+
+# add the VALUE in each GCP (never commit it):
+printf %s "$MY_API_KEY" | gcloud secrets versions add my-api-key --project=<gcp> --data-file=-
+```
+
+Verify each tier can actually read its secrets **before** deploying:
+
+```bash
+agentq doctor --tier dev
+agentq doctor --tier staging
+agentq doctor --tier prod
+```
+
+`doctor --tier <t>` fails if a referenced secret is missing in that tier's
+project or the runtime SA lacks `roles/secretmanager.secretAccessor` — catching
+the "works in dev, denied in staging/prod" failure before it reaches runtime.
+
+> Env vars are baked into the engine at deploy time, so after changing a secret
+> **ref** (not the value) you must redeploy for it to take effect. Rotating the
+> secret **value** on a `versions/latest` ref needs no redeploy.
 
 ### 4. Bootstrap KB datastores (per AgentQ project, not per GCP)
 

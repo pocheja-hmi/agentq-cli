@@ -242,8 +242,9 @@ the Python side at `AgentqConfig.resolve_target()`). Order of precedence:
 2. `gitops.enabled === true` and no `--tier` → use `tiers[gitops.default_tier]`.
 3. Otherwise → use legacy `cfg.deployment` and `cfg.knowledge_base`.
 
-Every command (`deploy`, `destroy`, `kb`, `state`, `setup-cicd`) calls
-`resolveTarget()` and consumes the resulting `ResolvedTarget` struct. No
+Every command (`deploy`, `destroy`, `kb`, `state`, `setup-cicd`,
+`verify-secrets`) calls `resolveTarget()` and consumes the resulting
+`ResolvedTarget` struct. No
 command does its own tier math. If we ever need a 4th tier or rename
 "staging" to "qa", we change it in `tier-resolver.ts` and TIERS.
 

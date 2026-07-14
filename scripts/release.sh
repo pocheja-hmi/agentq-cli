@@ -20,12 +20,17 @@
 #     9. Moves the floating major-version BRANCH `vMAJOR` to point at the tag.
 #    10. Pushes everything with EXPLICIT refspecs (no ambiguity).
 #
-# Consumers install via:
-#     npm install -g github:HorizonMedia/agentq-cli#v1          # floating major
-#     npm install -g github:HorizonMedia/agentq-cli#v1.0.2      # exact version
+# Consumers install via the packed tarball attached to each release:
+#     npm install -g https://github.com/HorizonMedia/agentq-cli/releases/download/vX.Y.Z/agentq-cli-X.Y.Z.tgz
 #
-# The `prepare` hook in package.json runs `npm run build` during install,
-# so consumers always get a freshly compiled CLI for the ref they pinned.
+# The `npm install -g github:HorizonMedia/agentq-cli#vX` path is BROKEN on
+# npm 11.x + fnm + macOS (drops bin/ and package.json on global installs),
+# so we deliberately don't advertise it. After this script finishes,
+# attach the tarball as a release asset:
+#     cd /tmp && rm -rf cli-pack && git clone --depth 1 --branch vX.Y.Z \
+#         https://github.com/HorizonMedia/agentq-cli.git cli-pack
+#     cd cli-pack && npm pack
+#     gh release upload vX.Y.Z agentq-cli-X.Y.Z.tgz --repo HorizonMedia/agentq-cli
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -209,13 +214,16 @@ cat <<EOF
 
 ✓ agentq-cli $VERSION published.
 
-  Consumers install:
-      npm install -g github:HorizonMedia/agentq-cli#${MAJOR}       # floating
-      npm install -g github:HorizonMedia/agentq-cli#${VERSION}    # pinned
-
   Don't forget to:
     - Update CHANGELOG.md if you haven't already
     - Open a GitHub Release: gh release create ${VERSION} --notes-from-tag
+    - Build + attach the tarball asset (the consumer install path):
+        cd /tmp && rm -rf cli-pack
+        git clone --depth 1 --branch ${VERSION} https://github.com/HorizonMedia/agentq-cli.git cli-pack
+        cd cli-pack && npm pack
+        gh release upload ${VERSION} agentq-cli-${NPM_VERSION}.tgz --repo HorizonMedia/agentq-cli
+    - Consumers then install with:
+        npm install -g https://github.com/HorizonMedia/agentq-cli/releases/download/${VERSION}/agentq-cli-${NPM_VERSION}.tgz
     - Bump the cli_version default in agentq-actions if this is a recommended
       pin for new scaffolds (currently in scaffolded workflows + actions/setup).
 EOF

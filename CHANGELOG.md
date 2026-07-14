@@ -4,6 +4,92 @@ All notable changes to `agentq-cli` will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — WIF impersonation bindings never authorized
+- `setup-cicd` gated every `roles/iam.workloadIdentityUser` binding with an IAM
+  condition on `request.auth.claims.ref`. IAM binding conditions cannot read the
+  federated OIDC token's claims, so the condition was always false and every
+  impersonation was denied (403 `getAccessToken`). `bindWifToSA` now encodes the
+  restriction in the principal itself — `google.subject`
+  (`repo:<org>/<repo>:ref:refs/heads/<branch>` / `:pull_request`) for per-repo
+  scopes, `attribute.ref` for org+branch, `attribute.repository_owner` for the
+  read-only plan SA — with no CEL condition.
+- Scaffolded `agentq-deploy.yml`: route `workload_identity_provider` by
+  environment (each GCP has its own pool; the provider must match the SA's
+  project), and make `tier` / `gcp_project` / `state_bucket` PR-aware via
+  `github.base_ref` (on a PR `github.ref_name` is the merge ref, so they were
+  resolving to the dev tier while the SA resolved to staging/prod → cross-project
+  denials and wrong-tier plans). Two provider placeholders
+  (`REPLACE_ME_dev_gcp_wif_provider` / `REPLACE_ME_prod_gcp_wif_provider`).
+
+### Added
+- `setup-cicd --secret <name>` (repeatable): provision an empty Secret Manager
+  secret in the GCP and grant every runtime SA `roles/secretmanager.secretAccessor`.
+  The value is never passed through the flag.
+- `agentq doctor --tier <t>`: Secret Manager preflight — for each `*_SECRET_REF`
+  in `runtime.env_vars`, resolve `{project}` to the tier's project and verify the
+  secret exists and the runtime SA can read it.
+- `agentq verify-secrets --tier <t>`: CI/pre-deploy preflight that tests the real
+  runtime path by impersonating the runtime SA. Exits non-zero on failure.
+
+### Docs
+- `GETTING_STARTED.md` + `CICD_SETUP.md` template: dual WIF providers, `--secret`
+  provisioning, project-relative `{project}` secret refs, and `doctor --tier`
+  verification.
+
+## [0.2.2] — 2026-06-01
+
+### Docs — Tarball install is now the documented consumer path
+- `npm install -g github:HorizonMedia/agentq-cli#vX` is unreliable on
+  npm 11.x + fnm + macOS: the global git-install code path silently
+  drops `bin/`, `package.json`, README, and CHANGELOG from the
+  installed package, leaving the `agentq` bin shim pointing at a
+  non-existent file. Reproducible with both pinned tags and floating
+  major branches.
+- Documented consumer path is now the pre-packed tarball attached to
+  every GitHub Release:
+  `npm install -g https://github.com/HorizonMedia/agentq-cli/releases/download/vX.Y.Z/agentq-cli-X.Y.Z.tgz`.
+- `scripts/release.sh` post-release instructions now spell out the
+  `npm pack` + `gh release upload` step.
+- CI (`agentq-actions/actions/setup/action.yml`) already used the
+  clone + `npm install -g .` approach and was unaffected. No CI change
+  needed.
+
+### Added — `prepare` no-op
+- `package.json` declares `"prepare": "node -e \"0\""`. Helps non-global
+  git installs flip onto npm's pack/install pipeline; doesn't fix the
+  global-install drop bug but is harmless.
+
+## [0.2.1] — 2026-06-01
+
+### Internal — `prepare` hook experiment (superseded by v0.2.2 docs change)
+- Added a `prepare` script that rebuilt `dist/` on install. Withdrawn in
+  v0.2.2 because devDependencies (including `typescript`) aren't surfaced
+  during global git installs, so the build failed with
+  `sh: tsc: command not found`. The committed `dist/` is the source of
+  truth for consumers; nothing needs to be rebuilt at install time.
+
+## [0.2.0] — 2026-06-01
+
+### Changed — `config_hash` now folds the package source tree
+- `compute_config_hash` (both TS and Python implementations) now
+  incorporates a sha256 fingerprint of every shippable file under
+  `<project_root>/src/<package>/` plus each `runtime.extra_packages`
+  entry. Previously the hash only saw `agentq.config.yaml`, so
+  source-only edits were invisible to plan/apply and consumers had to
+  bump a manual `AGENT_DEPLOY_NONCE` env var to force a redeploy on
+  every code change.
+- File walk mirrors `deploy.py::_normalize_extra_packages` exactly so
+  the hash covers what actually ships. `__pycache__/`, `*.pyc`, `*.pyo`,
+  `.DS_Store`, and common cache/VCS dirs are excluded.
+- **Migration**: zero-touch. Existing deployments will see one expected
+  hash mismatch on the first `agentq plan` after upgrading (yaml-only
+  hash → yaml+source hash) which triggers a single forced redeploy.
+  Subsequent plans behave as before. Consumers can delete any
+  `AGENT_DEPLOY_NONCE` workaround from their `agentq.config.yaml`.
+- TS↔Python parity is covered by `src/lib/config-hash.test.ts`, which
+  drives both sides off the same temp-directory fixture and asserts
+  equal output before and after a source mutation.
+
 ### Changed — Knowledge-base provider id rename (with full backwards compat)
 - The canonical KB provider id is now `gemini-enterprise-search` (was
   `vertex-ai-search`). All scaffolded YAMLs, state files, and CLI prompts
