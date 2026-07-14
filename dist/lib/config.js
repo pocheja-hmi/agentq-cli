@@ -100,6 +100,10 @@ const TierSchema = z.object({
     runtime_service_account: z.string().nullable().default(null),
     display_name_suffix: z.string().default(''),
     labels: z.record(z.string()).default({}),
+    // Per-tier env var overrides, merged over runtime.env_vars at deploy time
+    // (Python deploy._common_kwargs). Lets a tier in a different GCP project
+    // point at its own DB / secrets / project.
+    env_vars: z.record(z.string()).default({}),
     kb: TierKbSchema.default({}),
 });
 const GitopsSchema = z.object({
