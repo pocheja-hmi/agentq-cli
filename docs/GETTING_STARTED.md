@@ -52,18 +52,19 @@ gcloud auth application-default login
 
 ## 1. Install the CLI
 
-```bash
-# Pin to a tagged release for stability:
-npm install -g github:HorizonMedia/agentq-cli#v0.1.0
+Install from the packed tarball attached to a GitHub Release:
 
-# Or override via env var (e.g. after the repo moves to your org):
-export AGENTQ_CLI_REPO=github:my-org/agentq-cli#v0.1.0
-npm install -g "$AGENTQ_CLI_REPO"
+```bash
+npm install -g https://github.com/HorizonMedia/agentq-cli/releases/download/v0.2.2/agentq-cli-0.2.2.tgz
 
 # Verify
 agentq --version
 agentq --help
 ```
+
+> Don't reach for `npm install -g github:HorizonMedia/agentq-cli#vX` —
+> that path is broken on npm 11.x + fnm + macOS (the global install drops
+> `bin/` and `package.json` silently). The tarball is the reliable path.
 
 ## 2. Scaffold a new project
 
@@ -108,14 +109,16 @@ Run from your laptop with project-level IAM authority. This is the heavy
 lifting — but you only do it twice in your lifetime as an org (once per GCP
 project, regardless of how many AgentQ projects use them).
 
-**Dev GCP** — gets the dev tier's service accounts:
+**Dev GCP** — gets the dev tier's service accounts (add `--secret <name>` for
+each runtime secret the agent reads, so it's provisioned in this GCP too):
 
 ```bash
 agentq setup-cicd \
   --gcp-project <YOUR_DEV_GCP> \
   --github-org   <YOUR_GH_ORG> \
   --github-repo  <YOUR_REPO_NAME> \
-  --tiers dev
+  --tiers dev \
+  --secret <YOUR_SECRET_NAME>
 ```
 
 **Prod GCP** — gets staging + prod tiers:
@@ -125,30 +128,56 @@ agentq setup-cicd \
   --gcp-project <YOUR_PROD_GCP> \
   --github-org  <YOUR_GH_ORG> \
   --github-repo <YOUR_REPO_NAME> \
-  --tiers staging --tiers prod
+  --tiers staging --tiers prod \
+  --secret <YOUR_SECRET_NAME>
 ```
 
 What this creates per GCP: WIF pool + OIDC provider, 2 SAs per tier (deploy
-+ runtime), 1 `agentq-plan` SA, IAM bindings, state bucket. All idempotent —
-re-run safely. Full inventory in
++ runtime), 1 `agentq-plan` SA, IAM bindings, state bucket, and (with
+`--secret`) an empty Secret Manager secret + runtime-SA accessor. All
+idempotent — re-run safely. Full inventory in
 [`agentq-actions/docs/SETUP.md`](https://github.com/HorizonMedia/agentq-actions/blob/main/docs/SETUP.md).
 
-The command's output ends with a block like:
+Each GCP has its **own** WIF pool, so each run ends with a block naming the
+provider URI *and the exact workflow placeholder it fills*:
 
 ```
-# workload_identity_provider input for agentq-actions:
-#   projects/123456789/locations/global/workloadIdentityPools/agentq-pool/providers/github
+# workload_identity_provider for this GCP (my-prod-gcp):
+#   projects/780030366269/locations/global/workloadIdentityPools/agentq-pool/providers/github
+# In .github/workflows/agentq-deploy.yml, replace this token with the URI above:
+#   REPLACE_ME_prod_gcp_wif_provider
 ```
 
-**Copy that URI** — you need it in the next step.
+**Copy both URIs** (dev-GCP and prod-GCP runs) — you need them next.
 
 ## 4. Wire the workflow
 
-Open `.github/workflows/agentq-deploy.yml` in your scaffolded project.
-Replace `REPLACE_ME_with_value_printed_by_agentq_setup-cicd` with the WIF
-URI from step 3.
+Open `.github/workflows/agentq-deploy.yml`. Because impersonation is authorized
+per-project, the workflow routes the provider by environment, so fill **both**
+placeholders:
 
-That's the only manual edit. Commit:
+- `REPLACE_ME_dev_gcp_wif_provider` ← the dev-GCP URI.
+- `REPLACE_ME_prod_gcp_wif_provider` ← the prod-GCP URI.
+
+(One GCP for everything? Both are the same token — replace once.)
+
+If the agent reads secrets, add the VALUE in each GCP and reference it
+project-relatively so every tier reads its own copy:
+
+```bash
+printf %s "$VALUE" | gcloud secrets versions add <YOUR_SECRET_NAME> --project=<gcp> --data-file=-
+# in agentq.config.yaml → runtime.env_vars:
+#   <KEY>_SECRET_REF: projects/{project}/secrets/<YOUR_SECRET_NAME>/versions/latest
+```
+
+Verify each tier resolves before you push:
+
+```bash
+agentq doctor --tier dev
+agentq doctor --tier staging
+```
+
+Commit:
 
 ```bash
 git add .

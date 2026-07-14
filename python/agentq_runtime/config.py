@@ -111,6 +111,10 @@ class Tier:
     runtime_service_account: Optional[str] = None
     display_name_suffix: str = ""
     labels: dict[str, str] = field(default_factory=dict)
+    # Per-tier env var overrides, merged over the global runtime.env_vars at
+    # deploy time (see deploy._common_kwargs). Lets tiers that live in a
+    # different GCP project point at their own DB / secrets / project.
+    env_vars: dict[str, str] = field(default_factory=dict)
     kb: TierKb = field(default_factory=TierKb)
 
 
@@ -154,6 +158,8 @@ class ResolvedTarget:
     kb: TierKb
     # The datastore resource path for this target, computed lazily.
     datastore_resource: Optional[str] = None
+    # Per-tier env var overrides (merged over global runtime.env_vars).
+    env_vars: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -242,6 +248,7 @@ class AgentqConfig:
                 labels=dict(t.labels),
                 kb=t.kb,
                 datastore_resource=self.datastore_resource_for(tier),
+                env_vars=dict(t.env_vars),
             )
         # Legacy fallback.
         return ResolvedTarget(

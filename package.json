@@ -1,6 +1,6 @@
 {
   "name": "agentq-cli",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "description": "Scaffold, deploy, and manage AgentQ Custom Agents (Agent Engine on Gemini Enterprise + ADK).",
   "type": "module",
   "bin": {
@@ -20,7 +20,8 @@
     "watch": "tsc -p tsconfig.json --watch",
     "clean": "rm -rf dist",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test dist/**/*.test.js"
+    "test": "node --test dist/**/*.test.js",
+    "prepare": "node -e \"0\""
   },
   "engines": {
     "node": ">=18.0.0"

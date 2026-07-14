@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+from pathlib import Path
 from typing import Any
 
 from . import config as cfgmod
@@ -19,6 +21,14 @@ AUTO_INJECTED_ENV_KEYS = frozenset({
     "GOOGLE_GENAI_USE_VERTEXAI",
     "KB_DATASTORE",
 })
+
+# Filesystem entries that never affect the deployed tarball.
+_SRC_EXCLUDED_DIRS = frozenset({
+    "__pycache__", ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".tox", ".venv", "node_modules",
+})
+_SRC_EXCLUDED_SUFFIXES = (".pyc", ".pyo")
+_SRC_EXCLUDED_FILENAMES = frozenset({".DS_Store"})
 
 
 def _canonical(value: Any) -> str:
@@ -49,6 +59,96 @@ def _canonical(value: Any) -> str:
             parts.append(json.dumps(k) + ":" + _canonical(v))
         return "{" + ",".join(parts) + "}"
     raise TypeError(f"_canonical: unsupported type {type(value).__name__}")
+
+
+def _iter_package_files(root: Path) -> list[tuple[str, str]]:
+    """Walk `root` (a package directory under <project_root>/src/) and return
+    a list of ``(relpath, sha256_hex)`` pairs for every shippable file.
+
+    `relpath` is rooted at `root.parent` so the recorded path is
+    ``<package>/<file>`` — matching the layout inside the deploy tarball.
+    """
+    if not root.is_dir():
+        return []
+    base = root.parent
+    out: list[tuple[str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _SRC_EXCLUDED_DIRS)
+        for fn in sorted(filenames):
+            if fn in _SRC_EXCLUDED_FILENAMES:
+                continue
+            if fn.endswith(_SRC_EXCLUDED_SUFFIXES):
+                continue
+            full = Path(dirpath) / fn
+            try:
+                data = full.read_bytes()
+            except OSError:
+                continue
+            sha = hashlib.sha256(data).hexdigest()
+            rel = full.relative_to(base).as_posix()
+            out.append((rel, sha))
+    return out
+
+
+def _source_roots(cfg: cfgmod.AgentqConfig) -> list[Path]:
+    """Return the package directories that the deploy tarball will contain.
+
+    Mirrors deploy.py::_normalize_extra_packages so the hash covers exactly
+    what ships. `cfg.project_root` must point at the directory holding
+    `src/<package>/`.
+    """
+    project_root = getattr(cfg, "project_root", None)
+    if project_root is None:
+        return []
+    src_dir = Path(project_root) / "src"
+    roots: list[Path] = []
+    main_pkg = (cfg.project.package or "").strip()
+    seen: set[str] = set()
+    if main_pkg:
+        main_root = src_dir / main_pkg
+        if main_root.is_dir():
+            roots.append(main_root)
+            seen.add(main_pkg)
+    for ep in (cfg.runtime.extra_packages or []):
+        s = (ep or "").strip()
+        if not s:
+            continue
+        if os.path.isabs(s):
+            p = Path(s)
+            key = str(p)
+        else:
+            if s.startswith("./"):
+                s = s[2:]
+            if s.startswith("src/"):
+                s = s[4:]
+            p = src_dir / s
+            key = os.path.basename(s.rstrip("/")) or s
+        if key in seen:
+            continue
+        if p.is_dir():
+            roots.append(p)
+            seen.add(key)
+    return roots
+
+
+def _source_tree_hash(cfg: cfgmod.AgentqConfig) -> str:
+    """Hash the contents of every shippable package directory.
+
+    Returns ``sha256:<hex>`` over a canonical list of
+    ``{"path": <relpath>, "sha256": <file_hex>}`` entries sorted by path.
+    Returns an empty string when no packages were found (e.g. fixture
+    configs with no `project_root` on disk) — kept stable so the parity
+    test fixture has a deterministic empty case.
+    """
+    entries: list[tuple[str, str]] = []
+    for r in _source_roots(cfg):
+        entries.extend(_iter_package_files(r))
+    if not entries:
+        return ""
+    entries.sort(key=lambda pair: pair[0])
+    payload = [{"path": p, "sha256": s} for p, s in entries]
+    serial = _canonical(payload)
+    return "sha256:" + hashlib.sha256(serial.encode("utf-8")).hexdigest()
 
 
 def _deployed_view(cfg: cfgmod.AgentqConfig, tier: str | None) -> dict[str, Any]:
@@ -84,6 +184,11 @@ def _deployed_view(cfg: cfgmod.AgentqConfig, tier: str | None) -> dict[str, Any]
             "package": cfg.project.package,
             "display_name": cfg.project.display_name,
         },
+        # Folds the package source tree into the drift token so a code-only
+        # change (no YAML edit) still produces a fresh hash and triggers a
+        # redeploy. Empty string when no project_root is available (legacy
+        # fixture configs); production calls always have one.
+        "source_tree_hash": _source_tree_hash(cfg),
         "agent": {
             "pattern": cfg.agent.pattern,
             "entry_module": cfg.agent.entry_module,

@@ -257,6 +257,15 @@ async function buildContext(answers) {
             prod_gcp: a.gitops.prodGcp,
             dev_state_bucket: defaultStateBucket(a.gitops.devGcp),
             prod_state_bucket: defaultStateBucket(a.gitops.prodGcp),
+            // WIF provider resource names carry the numeric project number, which
+            // isn't known at scaffold time — setup-cicd prints it per GCP. The
+            // workflow routes between these two by env (see agentq-deploy.yml).
+            // When dev and prod share one GCP there's a single pool, so both slots
+            // use the same placeholder → the user replaces it once.
+            dev_wif_provider: 'REPLACE_ME_dev_gcp_wif_provider',
+            prod_wif_provider: a.gitops.devGcp === a.gitops.prodGcp
+                ? 'REPLACE_ME_dev_gcp_wif_provider'
+                : 'REPLACE_ME_prod_gcp_wif_provider',
             actions_ref: `${a.gitops.actionsRepo}/.github/workflows/deploy.yml@${a.gitops.actionsRef}`,
         } : null,
         flags: {
