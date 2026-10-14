@@ -4,6 +4,17 @@ All notable changes to `agentq-cli` will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — per-repo WIF bindings failed for orgs using GitHub's immutable OIDC subject
+- Orgs that opt into GitHub's immutable `sub`
+  (`repo:<org>@<org_id>/<repo>@<repo_id>:ref:refs/heads/<branch>`) never matched
+  the per-repo `principal://…/subject/repo:<org>/<repo>:ref:…` binding → 403
+  `getAccessToken` on staging/prod deploys. The provider now maps
+  `attribute.repo_ref = assertion.repository + '/' + assertion.ref` (name-based
+  claims), and staging/prod deploy SAs are bound to
+  `principalSet://…/attribute.repo_ref/<org>/<repo>/<ref>`, which matches either
+  `sub` format. Re-run `setup-cicd` on each GCP to sync the provider mapping and
+  add the bindings (additive; existing bindings are kept).
+
 ### Fixed — WIF impersonation bindings never authorized
 - `setup-cicd` gated every `roles/iam.workloadIdentityUser` binding with an IAM
   condition on `request.auth.claims.ref`. IAM binding conditions cannot read the
