@@ -4,6 +4,13 @@ All notable changes to `agentq-cli` will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — engines sharing a staging bucket could run another agent's code
+- Deploys used the SDK's fixed `gcs_dir_name` (`agent_engine/`), so every agent
+  deploying to the same staging bucket overwrote the same `agent_engine.pkl`.
+  Vertex rebuilds an engine from those URIs on any later update (e.g. editing an
+  env var in the Console), so an engine could come back running whichever agent
+  deployed last. Deploys now pass `gcs_dir_name=agent_engine/<project>/<tier>`.
+
 ### Fixed — WIF impersonation bindings never authorized
 - `setup-cicd` gated every `roles/iam.workloadIdentityUser` binding with an IAM
   condition on `request.auth.claims.ref`. IAM binding conditions cannot read the

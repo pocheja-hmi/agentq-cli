@@ -218,7 +218,25 @@ def _common_kwargs(cfg, target=None) -> dict:
     )
     if target is not None and target.labels:
         kwargs["labels"] = target.labels
+    kwargs["gcs_dir_name"] = gcs_dir_name(cfg, target)
     return kwargs
+
+
+def gcs_dir_name(cfg, target=None) -> str:
+    """Staging-bucket directory for this agent + tier.
+
+    The SDK default is a fixed `agent_engine/`, so every agent sharing a staging
+    bucket overwrites the same agent_engine.pkl / dependencies.tar.gz. Vertex
+    rebuilds an engine from its packageSpec URIs whenever the engine is updated
+    (e.g. an env var edited in the Console), so an engine could silently come
+    back running ANOTHER agent's code. A per-agent, per-tier directory keeps
+    each engine's artifacts its own.
+    """
+    import re
+
+    slug = re.sub(r"[^a-z0-9-]+", "-", (cfg.project.name or "agent").lower()).strip("-") or "agent"
+    tier = getattr(target, "tier", None) or "default"
+    return f"agent_engine/{slug}/{tier}"
 
 
 def _with_layout_cwd(cfg, fn):
