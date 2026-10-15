@@ -182,7 +182,13 @@ export const setupCicdCommand: CommandModule<{}, Args> = {
     // attribute.repository_owner is required for the org-wide principalSet
     // binding pattern (Pattern C, see bindWifToSA opts). Without it the
     // principal `attribute.repository_owner/<org>` never matches anything.
-    const attrMapping = 'google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner,attribute.ref=assertion.ref,attribute.actor=assertion.actor,attribute.environment=assertion.environment';
+    //
+    // attribute.repo_ref (`<org>/<repo>/<ref>`) pins repo AND branch for the
+    // per-repo bindings. It is built from the `repository` + `ref` claims,
+    // which are names, so it matches whether GitHub sends the default `sub`
+    // (repo:<org>/<repo>:ref:…) or the immutable-ID `sub`
+    // (repo:<org>@<org_id>/<repo>@<repo_id>:ref:…) that orgs can opt into.
+    const attrMapping = `google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner,attribute.ref=assertion.ref,attribute.repo_ref=${REPO_REF_EXPR},attribute.actor=assertion.actor,attribute.environment=assertion.environment`;
 
     await idempotent(
       dryRun,
@@ -489,6 +495,9 @@ async function addServiceAccountIamBinding(
   );
 }
 
+/** CEL for the `attribute.repo_ref` mapping: `<org>/<repo>/<ref>`. */
+export const REPO_REF_EXPR = "assertion.repository + '/' + assertion.ref";
+
 export type WifScope = 'org' | 'repo';
 export type WifRefMatch = 'exact' | 'pr-prefix';
 
@@ -512,26 +521,28 @@ interface WifBindOpts {
  * MUST be encoded in the principal/principalSet itself, using attributes that
  * the provider maps (google.subject, attribute.ref, attribute.repository_owner).
  *
- * GitHub's default `sub` (mapped to google.subject) encodes repo + trigger:
- *   push:         repo:<org>/<repo>:ref:refs/heads/<branch>
- *   pull_request: repo:<org>/<repo>:pull_request
- * so a single-identity `principal://.../subject/<sub>` pins repo AND branch/PR
- * with no condition. Org-wide scopes fall back to a principalSet on a mapped
- * attribute (attribute.ref pins the branch; attribute.repository_owner pins
- * only the org — acceptable for the read-only plan SA).
+ * Per-repo scopes use `attribute.repo_ref` (`<org>/<repo>/<ref>`, mapped from
+ * the name-based `repository` + `ref` claims). NOT google.subject: an org that
+ * opts into GitHub's immutable OIDC subject sends
+ *   repo:<org>@<org_id>/<repo>@<repo_id>:ref:refs/heads/<branch>
+ * so a `principal://.../subject/repo:<org>/<repo>:ref:…` binding never matches
+ * (403 getAccessToken again). Pull requests on one repo still use the subject
+ * (`repo:<org>/<repo>:pull_request`); nothing calls that path today.
+ * Org-wide scopes use `attribute.ref` (pins the branch) or
+ * `attribute.repository_owner` (only the org — the read-only plan SA).
  */
-function wifMember(
+export function wifMember(
   projectNumber: string, poolId: string,
   githubOrg: string, githubRepo: string, ref: string,
   opts: WifBindOpts,
 ): string {
   const res = `iam.googleapis.com/projects/${projectNumber}/locations/global/workloadIdentityPools/${poolId}`;
   if (opts.scope === 'repo') {
-    // Pin this exact repo + trigger via google.subject.
-    const sub = opts.refMatch === 'pr-prefix'
-      ? `repo:${githubOrg}/${githubRepo}:pull_request`
-      : `repo:${githubOrg}/${githubRepo}:ref:${ref}`;
-    return `principal://${res}/subject/${sub}`;
+    if (opts.refMatch === 'pr-prefix') {
+      return `principal://${res}/subject/repo:${githubOrg}/${githubRepo}:pull_request`;
+    }
+    // Pin this exact repo + branch, independent of the `sub` format.
+    return `principalSet://${res}/attribute.repo_ref/${githubOrg}/${githubRepo}/${ref}`;
   }
   // Org-wide.
   if (opts.refMatch === 'exact') {
