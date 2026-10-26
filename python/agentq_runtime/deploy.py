@@ -83,7 +83,10 @@ def _init_vertex(cfg, target=None) -> None:
 
 def _build_app(cfg):
     from vertexai.agent_engines import AdkApp
+    from google.adk.apps import App
     root_agent = cfgmod.import_root_agent(cfg)
+    if isinstance(root_agent, App):
+        return AdkApp(app=root_agent, enable_tracing=cfg.observability.tracing)
     return AdkApp(agent=root_agent, enable_tracing=cfg.observability.tracing)
 
 
