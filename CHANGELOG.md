@@ -4,6 +4,15 @@ All notable changes to `agentq-cli` will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.5] — 2026-11-18
+
+### Fixed — ADK `App` entry points were built as an agent
+- `_build_app` always called `AdkApp(agent=<entry symbol>)`. When the entry symbol is an
+  ADK `App` (a root agent wrapped with plugins, e.g. SeaWorld's `seaworld_qa_agent.agent:app`),
+  the engine's runner root became an `App` instead of an agent and the deployed engine failed
+  at runtime. It now uses `AdkApp(app=<entry symbol>)` when the entry symbol is an `App`
+  (`48fe00b`); other entry symbols are unchanged.
+
 ## [0.2.4] — 2026-10-15
 
 ### Fixed — per-repo WIF bindings failed for orgs using GitHub's immutable OIDC subject
